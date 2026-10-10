@@ -84,7 +84,7 @@ import Drawer from "../components/Drawer.astro";
       <label class="field"><span>Project folder</span><input type="text" name="path" spellcheck="false" placeholder="(repo root)" />
         <small>Where <code>wrangler.jsonc</code> is, inside the repo. Leave empty to use the root or find it.</small></label>
       <label class="field"><span>GitHub token</span><input type="password" name="token" autocomplete="off" placeholder="Only for private repos" />
-        <small>A fine-grained token with read access to this repo’s contents. Leave empty to keep the saved one.</small></label>
+        <small>A fine-grained token for this repo: Contents read (private repos), Webhooks and Commit statuses read/write (to register the webhook and report builds). Leave empty to keep the saved one.</small></label>
       <label class="check"><input type="checkbox" name="checks" checked /><span>Run the type check and tests while building<small>The deploy stops if they fail.</small></span></label>
       <label class="check"><input type="checkbox" name="autoDeploy" /><span>Deploy on every push<small>Add the webhook shown on this page to the GitHub repo.</small></span></label>
     </form>
@@ -150,6 +150,7 @@ import Drawer from "../components/Drawer.astro";
           ${source ? `<button class="btn sm" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="git">Deploy from Git</button>` : ""}
           <button class="btn sm" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="current" data-dry="1">Dry run</button>
           ${l.url ? `<button class="btn sm" type="button" data-cf-verify="${esc(l.target)}">Verify</button>` : ""}
+          ${l.url ? `<button class="btn sm" type="button" data-operator data-move="${esc(l.target)}" data-dir="to">Copy data here → Cloudflare</button><button class="btn sm" type="button" data-operator data-move="${esc(l.target)}" data-dir="from">Copy data Cloudflare → here</button>` : ""}
           <button class="btn sm" type="button" data-operator data-cf-edit="${esc(l.target)}">Edit</button>
           <button class="btn sm danger" type="button" data-operator data-cf-unlink="${esc(l.target)}" data-tname="${esc(l.targetName)}">Unlink</button>
         </div></div>`).join("");
@@ -157,6 +158,15 @@ import Drawer from "../components/Drawer.astro";
         const dry = b.dataset.dry === "1";
         if (!dry && !(await confirmAction({ title: `Deploy ${name} to Cloudflare?`, text: b.dataset.from === "git" ? "FleetIQ builds the Git source and deploys it with wrangler. Missing D1, KV, R2 and queues are created; Access is set up for the hostname." : "FleetIQ deploys the exact version running here with wrangler. Missing D1, KV, R2 and queues are created; Access is set up for the hostname.", ok: "Deploy" }))) return;
         let d: any; if (await act(b, async () => { d = await api(`/api/apps/${encodeURIComponent(name)}/targets/${b.dataset.cfDeploy}/deploy`, { method: "POST", json: { from: b.dataset.from, dryRun: dry } }); }, dry ? "Dry run started" : "Deploying to Cloudflare")) showLog(d.id, true).then(loadCf);
+      }));
+      el.querySelectorAll<HTMLButtonElement>("[data-move]").forEach((b) => b.addEventListener("click", async () => {
+        const to = b.dataset.dir === "to"; const t = b.dataset.move!;
+        const body = { from: to ? "celld" : t, to: to ? t : "celld", parts: ["d1", "kv", "do"], mode: "replace" };
+        let plan: any; if (!(await act(b, async () => { plan = await api(`/api/apps/${encodeURIComponent(name)}/migrate-data?wait=1`, { method: "POST", json: { ...body, dryRun: true } }); }, "Planned"))) return;
+        await showRun(plan.id);
+        if (plan.status !== "planned") return;
+        if (!(await confirmAction({ title: `Copy ${name}'s data ${to ? "to Cloudflare" : "from Cloudflare to this server"}?`, text: `D1 tables, KV entries and Durable Object tables on ${to ? "Cloudflare" : "this server"} are replaced with the ${to ? "server's" : "Cloudflare"} copy, as the plan shows. Back up first if you're unsure.`, ok: "Copy data", typed: name }))) return;
+        let r: any; if (await act(b, async () => { r = await api(`/api/apps/${encodeURIComponent(name)}/migrate-data`, { method: "POST", json: body }); }, "Copying data")) showRun(r.id);
       }));
       el.querySelectorAll<HTMLButtonElement>("[data-cf-verify]").forEach((b) => b.addEventListener("click", async () => {
         let r: any; if (await act(b, async () => { r = await api(`/api/apps/${encodeURIComponent(name)}/targets/${b.dataset.cfVerify}/verify`, { method: "POST" }); }, "Checked")) {
@@ -201,7 +211,13 @@ import Drawer from "../components/Drawer.astro";
         <dt>Last built commit</dt><dd>${source.lastCommit ? `<code>${esc(source.lastCommit.slice(0, 12))}</code>` : "None yet"}</dd>
         <dt>Deploy on push</dt><dd>${source.autoDeploy ? `<span class="status ok">On</span>` : `<span class="status off">Off</span>`}</dd>
         ${source.webhookSecret ? `<dt>GitHub webhook</dt><dd>Payload URL <code>${esc(source.webhookUrl)}</code>, content type <code>application/json</code>, secret <code class="copyable" id="wh-secret" title="Click to copy">${esc(source.webhookSecret)}</code>, just the push event.</dd>` : ""}
-      </dl>`;
+        <dt>Commit checks</dt><dd>${source.hasToken ? "Each build is reported on the commit in GitHub as <code>fleetiq/" + esc(name) + "</code>." : "Add a GitHub token to report each build on its commit and register the webhook for you."}</dd>
+      </dl>
+      ${source.hasToken ? `<div class="secret-actions" style="margin-top:12px"><button class="btn sm" type="button" data-operator id="wh-register">Register webhook on GitHub</button></div>` : ""}`;
+      document.getElementById("wh-register")?.addEventListener("click", async (ev) => {
+        let r: any; if (await act(ev.currentTarget as HTMLButtonElement, async () => { r = await api(`/api/apps/${encodeURIComponent(name)}/source/webhook`, { method: "POST" }); }, "Webhook registered")) toast(`Webhook ${r.action} on ${source.repo}`);
+      });
+      gateOperatorControls(el);
       document.getElementById("wh-secret")?.addEventListener("click", () => navigator.clipboard.writeText(source.webhookSecret).then(() => toast("Secret copied")).catch(() => {}));
       const f = $<HTMLFormElement>("#git-form");
       (f.elements.namedItem("repo") as HTMLInputElement).value = source.repo;
@@ -216,7 +232,9 @@ import Drawer from "../components/Drawer.astro";
     const f = new FormData(ev.target as HTMLFormElement);
     const body: any = { repo: String(f.get("repo")).trim(), ref: String(f.get("ref") || "main").trim(), path: String(f.get("path") || "").trim(), checks: f.get("checks") === "on", autoDeploy: f.get("autoDeploy") === "on" };
     if (f.get("token")) body.token = String(f.get("token"));
-    if (await act(document.querySelector('button[form="git-form"]'), () => api(`/api/apps/${encodeURIComponent(name)}/source`, { method: "PUT", json: body }), "Source saved")) {
+    let saved: any = null;
+    if (await act(document.querySelector('button[form="git-form"]'), async () => { saved = await api(`/api/apps/${encodeURIComponent(name)}/source`, { method: "PUT", json: body }); }, "Source saved")) {
+      if (saved?.webhook) toast(saved.webhook.ok ? `Webhook ${saved.webhook.action} on GitHub` : `Saved, but the webhook wasn't registered: ${saved.webhook.error}`, saved.webhook.ok ? "ok" : "bad");
       (document.getElementById("git") as HTMLDialogElement).close(); loadSource();
     }
   });
@@ -226,6 +244,17 @@ import Drawer from "../components/Drawer.astro";
     if (!(await act(btn, async () => { dep = await api(`/api/apps/${encodeURIComponent(name)}/deploy/git`, { method: "POST", json: {} }); }, `Building ${source?.repo}@${source?.ref}`)) || !dep) return;
     showLog(dep.id, true);
   });
+
+  // Live log for a data mover run (data moves, backups).
+  async function showRun(id: string) {
+    const dlg = document.getElementById("log") as HTMLDialogElement; if (!dlg.open) dlg.showModal();
+    for (;;) {
+      const r = await api<any>(`/api/mover/runs/${id}`);
+      $("#log-body").innerHTML = `<p style="margin:0 0 10px"><strong>${esc(r.label)}</strong><br><span class="status ${statusClass(r.status === "planned" ? "ok" : r.status)}">${esc(r.status === "planned" ? "Plan ready" : r.status)}</span></p><pre class="log" style="max-height:60vh">${esc(r.log || "Starting…")}</pre>`;
+      if (!["running", "planning"].includes(r.status) || !dlg.open) return r;
+      await new Promise((res) => setTimeout(res, 1500));
+    }
+  }
 
   // Live log for a deployment; refreshes while it runs.
   async function showLog(id: string, live = false) {

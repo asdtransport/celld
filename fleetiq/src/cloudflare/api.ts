@@ -132,6 +132,55 @@ export class Cloudflare {
     return { appId: main.app.id as string, aud: main.app.aud as string, created: main.created, teamDomain: await this.teamDomain() };
   }
 
+  // ---- data (for moving an app's data between celld and Cloudflare) ----
+  async d1Query(dbId: string, sql: string): Promise<any[]> {
+    const r = await this.must<any[]>("POST", this.acct(`/d1/database/${dbId}/query`), { sql }, "D1 query");
+    return (r ?? []).flatMap((x) => x?.results ?? []);
+  }
+  async kvKeys(nsId: string): Promise<{ name: string; expiration?: number; metadata?: unknown }[]> {
+    const out: any[] = []; let cursor = "";
+    for (let i = 0; i < 1000; i++) {
+      const r = await fetch(`${cfApiBase()}${this.acct(`/storage/kv/namespaces/${nsId}/keys?limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)}`, { headers: { authorization: `Bearer ${this.c.apiToken}` }, signal: AbortSignal.timeout(30_000) });
+      const j: any = await r.json().catch(() => ({}));
+      if (!r.ok || j.success === false) throw new CloudflareError(`list KV keys: ${(j.errors ?? []).map((e: any) => e.message).join("; ") || r.status}`);
+      out.push(...(j.result ?? []));
+      cursor = j.result_info?.cursor ?? "";
+      if (!cursor) break;
+    }
+    return out;
+  }
+  async kvValue(nsId: string, key: string): Promise<Uint8Array> {
+    const r = await fetch(`${cfApiBase()}${this.acct(`/storage/kv/namespaces/${nsId}/values/${encodeURIComponent(key)}`)}`, { headers: { authorization: `Bearer ${this.c.apiToken}` }, signal: AbortSignal.timeout(30_000) });
+    if (!r.ok) throw new CloudflareError(`read KV ${key}: HTTP ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  }
+  async kvBulkPut(nsId: string, entries: { key: string; value: string; base64?: boolean; expiration?: number; metadata?: unknown }[]) {
+    for (let i = 0; i < entries.length; i += 5000) await this.must("PUT", this.acct(`/storage/kv/namespaces/${nsId}/bulk`), entries.slice(i, i + 5000), "write KV");
+  }
+  async kvBulkDelete(nsId: string, keys: string[]) {
+    for (let i = 0; i < keys.length; i += 5000) await this.must("POST", this.acct(`/storage/kv/namespaces/${nsId}/bulk/delete`), keys.slice(i, i + 5000), "delete KV keys");
+  }
+  async putSecret(script: string, name: string, text: string) {
+    await this.must("PUT", this.acct(`/workers/scripts/${encodeURIComponent(script)}/secrets`), { name, text, type: "secret_text" }, `set Worker secret ${name}`);
+  }
+  // A service token lets FleetIQ itself through Access (for data moves). Cloudflare shows the secret once;
+  // when FleetIQ no longer has it, the token is rotated to get a new one.
+  async ensureServiceToken(name: string, known?: { id: string; clientId: string; clientSecret: string } | null) {
+    const list = await this.must<any[]>("GET", this.acct("/access/service_tokens"), undefined, "list Access service tokens");
+    const f = (list ?? []).find((t) => t.name === name);
+    if (f && known && known.id === f.id && known.clientSecret) return { ...known, created: false };
+    if (f) {
+      const r = await this.must<any>("POST", this.acct(`/access/service_tokens/${f.id}/rotate`), {}, "rotate Access service token");
+      return { id: f.id as string, clientId: (r.client_id ?? f.client_id) as string, clientSecret: r.client_secret as string, created: false };
+    }
+    const r = await this.must<any>("POST", this.acct("/access/service_tokens"), { name, duration: "8760h" }, "create Access service token");
+    return { id: r.id as string, clientId: r.client_id as string, clientSecret: r.client_secret as string, created: true };
+  }
+  async allowServiceToken(appId: string, tokenId: string) {
+    return this.ensurePolicyPublic(appId, { name: "FleetIQ service token", decision: "non_identity", include: [{ service_token: { token_id: tokenId } }] });
+  }
+  async ensurePolicyPublic(appId: string, body: { name: string; decision: string; include: unknown[] }) { return this.ensurePolicy(appId, body); }
+
   async workerVersion(script: string): Promise<string | null> {
     const r = await this.call<any>("GET", this.acct(`/workers/scripts/${encodeURIComponent(script)}/deployments`));
     return r.ok ? r.result?.deployments?.[0]?.versions?.[0]?.version_id ?? null : null;

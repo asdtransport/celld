@@ -12,5 +12,6 @@ const tables: string[] = [
   `CREATE INDEX IF NOT EXISTS mover_runs_job ON mover_runs(job, started_at);`,
   `CREATE TABLE IF NOT EXISTS targets (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, config TEXT NOT NULL, created_by TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
   `CREATE TABLE IF NOT EXISTS app_targets (app TEXT NOT NULL, target TEXT NOT NULL, worker_name TEXT NOT NULL, hostname TEXT, access INTEGER NOT NULL DEFAULT 1, allow TEXT, health_path TEXT NOT NULL DEFAULT '/api/health', resources TEXT, access_aud TEXT, url TEXT, last_version TEXT, last_deploy_at INTEGER, updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (app, target));`,
+  `CREATE TABLE IF NOT EXISTS app_secrets (app TEXT PRIMARY KEY, migrate_token TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
 ];
 export const DDL = tables.join("\n");

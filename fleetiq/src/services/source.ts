@@ -35,7 +35,7 @@ export async function fetchSource(src: Pick<AppSource, "repo" | "ref" | "token">
   const t = await fetch(`${base}/tarball/${commit}`, { headers: ghHeaders(token), redirect: "follow", signal: AbortSignal.timeout(180_000) })
     .catch((e) => { throw new SourceError(`download failed: ${e.message}`, 502); });
   if (!t.ok) throw new SourceError(`GitHub ${t.status} downloading ${src.repo}@${commit.slice(0, 7)}`, 502);
-  return { tgz: new Uint8Array(await t.arrayBuffer()), commit, label: `${src.repo}@${commit.slice(0, 7)} (${want})` };
+  return { tgz: new Uint8Array(await t.arrayBuffer()), commit, label: `${src.repo}@${commit.slice(0, 7)}${/^[0-9a-f]{7,40}$/.test(want) ? "" : ` (${want})`}` };
 }
 
 // GitHub signs webhook bodies with HMAC-SHA256 of the shared secret.

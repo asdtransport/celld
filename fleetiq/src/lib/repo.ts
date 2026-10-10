@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../db/runtime";
-import { type ApiToken, type App, type AppSource, type Deployment, type Route, apiTokens, appSources, apps, audit, deployments, routes } from "../db/schema";
+import { appSecrets, type ApiToken, type App, type AppSource, type Deployment, type Route, apiTokens, appSources, apps, audit, deployments, routes } from "../db/schema";
 // Synchronous, driver-blind repo (house rule).
 
 export const listApps = (): App[] => getDb().select().from(apps).orderBy(apps.name).all();
@@ -52,3 +52,12 @@ export const putSource = (s: Omit<AppSource, "updatedAt" | "lastCommit"> & { las
     .onConflictDoUpdate({ target: appSources.app, set: { repo: s.repo, ref: s.ref, path: s.path, token: s.token, autoDeploy: s.autoDeploy, webhookSecret: s.webhookSecret, checks: s.checks, updatedAt: Math.floor(Date.now() / 1000) } }).run();
 export const setSourceCommit = (app: string, commit: string) => getDb().update(appSources).set({ lastCommit: commit }).where(eq(appSources.app, app)).run();
 export const deleteSource = (app: string) => getDb().delete(appSources).where(eq(appSources.app, app)).run();
+
+// ---- per-app migrate secret (created on first use, never returned by the API) ----
+export function migrateToken(app: string): string {
+  const row = getDb().select().from(appSecrets).where(eq(appSecrets.app, app)).get();
+  if (row) return row.migrateToken;
+  const t = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+  getDb().insert(appSecrets).values({ app, migrateToken: t }).run();
+  return t;
+}

@@ -3,6 +3,7 @@ import { buildApp } from "../../src/app";
 import { DDL } from "../../src/db/ddl";
 import { setDb } from "../../src/db/runtime";
 import { AccessError, verifyAccess } from "./access";
+import { handlePortable, migrateAllowed } from "./portable";
 
 // Data layer lives in the DO: SQLite-in-DO is synchronous, so the sync repo runs verbatim.
 // On celld this DO is a "cell": leased to one node, LTX-replicated, restored from the bucket.
@@ -13,7 +14,10 @@ export class AppData {
     ctx.storage.sql.exec(DDL);
     this.app = buildApp({ buildSha: env.BUILD_SHA, allowedOrigins: env.ALLOWED_ORIGINS?.split(",") });
   }
-  fetch(req: Request) { return this.app.fetch(req); }
+  fetch(req: Request) {
+    if (new URL(req.url).pathname === "/__fleetiq/data") return handlePortable(req, this.ctx.storage.sql);
+    return this.app.fetch(req);
+  }
 }
 
 // Front door shared by both runtimes: Access gate -> /api/* to the data DO, /* to the Astro ASSETS build.
@@ -21,6 +25,11 @@ export class AppData {
 export default {
   async fetch(req: Request, env: any) {
     const u = new URL(req.url);
+    // FleetIQ data moves (export/import of the DO's tables); 404 unless the per-app secret matches.
+    if (u.pathname === "/__fleetiq/data") {
+      if (!migrateAllowed(req, env)) return new Response("Not found", { status: 404 });
+      return env.APP.get(env.APP.idFromName("singleton")).fetch(req);
+    }
     if (u.pathname.startsWith("/api/")) {
       // Liveness/runtime probes stay outside the gate so a load balancer can check them.
       if (u.pathname === "/api/runtime") return Response.json({ runtime: env.RUNTIME ?? "workers", environment: env.ENVIRONMENT });

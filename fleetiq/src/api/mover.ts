@@ -6,6 +6,7 @@ import { FLEET_ENDPOINT, cancelRun, resolveSide, restoreApp, runJob, startRun, s
 import { FLEET_PROVIDER, PROVIDERS, connectorFor, providerOf, redact, validateConfig } from "../mover/providers";
 import * as mrepo from "../mover/repo";
 import { MoverError } from "../mover/types";
+import { migrateData } from "../migrate/run";
 
 const name = z.string().trim().min(1).max(80);
 const prefix = z.string().trim().max(500).regex(/^[^\\]*$/).refine((p) => !p.split("/").includes(".."), "no .. in prefixes").default("");
@@ -161,6 +162,19 @@ export function moverRoutes(api: Hono) {
       const fresh = mrepo.getJob(job!.id)!;
       const run = b.runNow ? runJob(fresh, actorOf(c)) : null;
       return c.json({ job: jobView(fresh), run: run ? runView(run) : null }, 202);
+    } catch (e) { return err(c, e); }
+  });
+  // ---- app data between this server and a cloud target (D1, KV, Durable Objects) ----
+  api.post("/api/apps/:name/migrate-data", async (c) => {
+    const app = repo.getApp(c.req.param("name")); if (!app) return c.json({ error: "no such application" }, 404);
+    const b = z.object({
+      from: z.string().min(1), to: z.string().min(1),
+      parts: z.array(z.enum(["d1", "kv", "do"])).min(1).default(["d1", "kv", "do"]),
+      mode: z.enum(["replace", "merge"]).default("replace"), dryRun: z.boolean().default(false),
+    }).parse(await c.req.json());
+    try {
+      const r = await migrateData(app, b, actorOf(c));
+      return c.json(runView(c.req.query("wait") ? await waitRun(r.id, 240_000) : r), 202);
     } catch (e) { return err(c, e); }
   });
   api.post("/api/mover/restore", async (c) => {

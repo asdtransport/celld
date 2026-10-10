@@ -99,7 +99,27 @@ build that runs on celld; **Deploy from Git** builds the Git source. Each deploy
 5. checks from outside: health answers 200 and `/` redirects to your team's sign-in.
 
 **Dry run** validates the config with wrangler and bundles the Worker without touching Cloudflare.
-Data stays separate on each side; move it with the data mover.
+
+### Move an app's data between this server and Cloudflare
+
+On the app's page, **Copy data here → Cloudflare** or **Copy data Cloudflare → here** (or
+`POST /api/apps/<app>/migrate-data`). FleetIQ shows a plan first (rows per table, keys, what gets
+replaced), then copies:
+
+- **D1**: every table except platform ones; missing tables are created from the source schema.
+- **KV**: every key, byte-exact, with metadata and expiry; *replace* also deletes extra keys.
+- **Durable Objects**: through the app's own export point, `/__fleetiq/data`, which WorkIQ apps
+  carry in `cloudflare/worker/portable.ts`. It answers only to a per-app secret that FleetIQ sets
+  (a var on celld, a Worker secret on Cloudflare); on Cloudflare FleetIQ passes Access with its own
+  service token. Declare `"FLEETIQ_MIGRATE_TOKEN": ""` in the app's vars to turn it on.
+
+Counts are checked on both sides afterwards.
+
+### GitHub, both ways
+
+With a GitHub token on the app's Git source (Webhooks and Commit statuses read/write), FleetIQ
+registers the push webhook itself (**Register webhook on GitHub**, or automatically when you turn on
+deploy on push) and marks each commit pending → success/failure as `fleetiq/<app>`.
 
 ## Data mover: backups, disaster recovery and client migrations
 

@@ -19,7 +19,8 @@
     "ACCESS_AUD": "",
     "AUTH_PUBLIC_KEY_B64": "",
     "AUTH_JWKS_URL": "",
-    "AUTH_ALLOWED_ROLES": "authp/admin,authp/user"
+    "AUTH_ALLOWED_ROLES": "authp/admin,authp/user",
+    "FLEETIQ_MIGRATE_TOKEN": ""
   },
   "durable_objects": {
     "bindings": [{ "name": "APP", "class_name": "AppData" }]

@@ -19,7 +19,8 @@
   "vars": {
     "ENVIRONMENT": "production",
     "ACCESS_TEAM_DOMAIN": "lockstep.cloudflareaccess.com",
-    "ACCESS_AUD": "${ACCESS_AUD}"
+    "ACCESS_AUD": "${ACCESS_AUD}",
+    "FLEETIQ_MIGRATE_TOKEN": ""
   },
   "durable_objects": {
     "bindings": [

@@ -54,6 +54,12 @@ export function parseJsonc(text: string): any {
 
 // An app that gates on the edge (AUTH_MODE "edge") needs the edge's public key. Leave the var as ""
 // in the project and FleetIQ fills in this server's key, so one archive works on any server.
+// Any var declared as "" in the project is filled by FleetIQ (edge key, migrate secret).
+export function fillVar(text: string, name: string, value: string): { text: string; filled: boolean } {
+  if (!value) return { text, filled: false };
+  const re = new RegExp(`("${name}"\\s*:\\s*)""`);
+  return re.test(text) ? { text: text.replace(re, `$1"${value}"`), filled: true } : { text, filled: false };
+}
 export function fillEdgeKey(text: string, key: string): { text: string; filled: boolean } {
   if (!key) return { text, filled: false };
   const re = /("AUTH_PUBLIC_KEY_B64"\s*:\s*)""/;
@@ -137,9 +143,12 @@ async function deployArchive(app: App, ctx: DeployCtx, archive: string, log: str
   log.push(`Project ${root.slice(releaseDir.length + 1)} (${cfgFile})`, `Deploying to ${config.bucket}/${app.prefix}`);
   const cfgPath = join(root, cfgFile);
   const edge = fillEdgeKey(await Bun.file(cfgPath).text(), config.authPublicKeyB64);
-  if (edge.filled) { await Bun.write(cfgPath, edge.text); log.push("Filled AUTH_PUBLIC_KEY_B64 with this server's edge key"); }
+  const mig = /"FLEETIQ_MIGRATE_TOKEN"\s*:\s*""/.test(edge.text) ? fillVar(edge.text, "FLEETIQ_MIGRATE_TOKEN", repo.migrateToken(app.name)) : { text: edge.text, filled: false };
+  if (edge.filled || mig.filled) await Bun.write(cfgPath, mig.text);
+  if (edge.filled) log.push("Filled AUTH_PUBLIC_KEY_B64 with this server's edge key");
+  if (mig.filled) log.push("Filled FLEETIQ_MIGRATE_TOKEN (data moves enabled)");
   let cfg: any = null;
-  try { cfg = parseJsonc(edge.text); } catch (e: any) { throw new DeployError(`${cfgFile} is not valid JSONC: ${e.message}`); }
+  try { cfg = parseJsonc(mig.text); } catch (e: any) { throw new DeployError(`${cfgFile} is not valid JSONC: ${e.message}`); }
   const { version, output } = await celld.deploy(app.prefix, root);
   log.push(output);
   repo.setDeploymentLog(id, log.join("\n"));
@@ -191,8 +200,12 @@ export async function deployUpload(app: App, file: File, actor: string) {
 export async function deployFromSource(app: App, opts: {
   label: string; fetch: () => Promise<{ tgz: Uint8Array; commit: string | null; label: string }>;
   path: string; checks: boolean; onCommit?: (sha: string) => void;
+  // Report progress somewhere outside (GitHub commit statuses); returns a log line or "".
+  report?: (state: "pending" | "success" | "failure", sha: string, description: string) => Promise<string>;
 }, actor: string) {
   const ctx = await begin(app, opts.label, actor);
+  let sha: string | null = null;
+  const report = async (state: "pending" | "success" | "failure", d: string) => { if (opts.report && sha) { const line = await opts.report(state, sha, d).catch(() => ""); if (line) log.push(line); } };
   const log: string[] = [];
   const flush = (extra = "") => repo.setDeploymentLog(ctx.id, log.join("\n") + (extra ? `\n${extra}` : ""));
   const job = (async () => {
@@ -200,7 +213,7 @@ export async function deployFromSource(app: App, opts: {
       log.push(`Fetching ${opts.label}`); flush();
       const src = await opts.fetch();
       log.push(`Source ${src.label} (${(src.tgz.length / 1024 / 1024).toFixed(1)} MB)`);
-      if (src.commit) { opts.onCommit?.(src.commit); repo.updateDeploymentSource(ctx.id, src.label); }
+      if (src.commit) { sha = src.commit; opts.onCommit?.(src.commit); repo.updateDeploymentSource(ctx.id, src.label); await report("pending", `Building and deploying ${app.name}`); }
       log.push(`Building in a throwaway container (${config.builderImage}${opts.checks ? "" : ", checks skipped"})`); flush();
       const files = [{ name: "src.tgz", data: src.tgz }];
       if (config.builderCaFile) files.push({ name: "ca.pem", data: new Uint8Array(await Bun.file(config.builderCaFile).arrayBuffer()) });
@@ -214,8 +227,10 @@ export async function deployFromSource(app: App, opts: {
       const archive = join(ctx.releaseDir, "build.tgz");
       await Bun.write(archive, b.output);
       log.push(`Built archive ${(b.output.length / 1024 / 1024).toFixed(1)} MB`);
-      await deployArchive(app, ctx, archive, log, actor);
-    } catch (e: any) { fail(app, ctx, log, actor, e); }
+      const done = await deployArchive(app, ctx, archive, log, actor);
+      await report("success", `${app.name} ${done.version ?? ""} is live${done.warning ? ` (${done.warning})` : ""}`);
+      if (sha && opts.report) repo.setDeploymentLog(ctx.id, log.join("\n"));
+    } catch (e: any) { await report("failure", String(e.message ?? "deploy failed")); fail(app, ctx, log, actor, e); }
     finally { locks.delete(app.name); }
   })();
   void job;

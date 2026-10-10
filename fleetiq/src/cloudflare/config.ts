@@ -36,6 +36,7 @@ export function toCloudflareConfig(cfg: any, t: CfTargetSettings, ids: CfResourc
   if ("AUTH_MODE" in vars) vars.AUTH_MODE = t.access ? "access" : "none";
   if (t.access) { vars.ACCESS_AUD = t.access.aud; vars.ACCESS_TEAM_DOMAIN = t.access.teamDomain; }
   if ("AUTH_PUBLIC_KEY_B64" in vars) vars.AUTH_PUBLIC_KEY_B64 = "";
+  delete vars.FLEETIQ_MIGRATE_TOKEN; // set as a Worker secret after the deploy, not a plain var
   out.vars = vars;
   const need = resourceNeeds(t.app, cfg);
   if (out.d1_databases) out.d1_databases = out.d1_databases.map((d: any, i: number) => {

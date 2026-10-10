@@ -49,6 +49,10 @@ export async function kvList(prefix: string, ns: string, opts: { after?: string 
 }
 export const kvGet = async (prefix: string, ns: string, key: string) => (await celld(["kv", "get", ns, key, ...storageArgs(prefix)])).stdout;
 export const kvPut = async (prefix: string, ns: string, key: string, value: string) => { await celld(["kv", "put", ns, key, value, ...storageArgs(prefix)]); };
+// Bulk KV in the Wrangler file format ([{ key, value, base64?, expiration?, metadata? }]).
+export async function kvBulkGet(prefix: string, ns: string, file: string) { await celld(["kv", "bulk", "get", ns, file, ...storageArgs(prefix)], { timeoutMs: 600_000 }); }
+export async function kvBulkPut(prefix: string, ns: string, file: string) { await celld(["kv", "bulk", "put", ns, file, ...storageArgs(prefix)], { timeoutMs: 600_000 }); }
+export async function kvBulkDelete(prefix: string, ns: string, file: string) { await celld(["kv", "bulk", "delete", ns, file, ...storageArgs(prefix)], { timeoutMs: 600_000 }); }
 export const kvDelete = async (prefix: string, ns: string, key: string) => { await celld(["kv", "delete", ns, key, ...storageArgs(prefix)]); };
 export async function kvInfo(prefix: string, ns: string) {
   const out = (await celld(["kv", "info", ns, ...storageArgs(prefix)])).stdout;
@@ -65,6 +69,11 @@ export async function queueAction(prefix: string, q: string, action: "pause" | "
 // ---- D1 (needs the project dir: database identity comes from wrangler) ----
 export async function d1Execute(prefix: string, db: string, sql: string, projectDir: string) {
   const r = await celld(["d1", "execute", db, "--command", sql, projectDir, ...storageArgs(prefix), "--json"], { timeoutMs: 60_000 });
+  return { rows: parseJsonl(r.stdout), message: cleanError(r.stderr).split("\n")[0] ?? "" };
+}
+// Bulk SQL from a file (d1 execute --file): data moves write thousands of rows this way.
+export async function d1ExecFile(prefix: string, db: string, file: string, projectDir: string) {
+  const r = await celld(["d1", "execute", db, "--file", file, projectDir, ...storageArgs(prefix), "--json"], { timeoutMs: 300_000 });
   return { rows: parseJsonl(r.stdout), message: cleanError(r.stderr).split("\n")[0] ?? "" };
 }
 export async function d1Migrations(prefix: string, db: string, projectDir: string, apply = false) {

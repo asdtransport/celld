@@ -155,3 +155,10 @@ export const appTargets = sqliteTable("app_targets", {
   updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 export type AppTarget = typeof appTargets.$inferSelect;
+
+// Per-app secret FleetIQ uses to call the app's own data export/import point (/__fleetiq/data).
+export const appSecrets = sqliteTable("app_secrets", {
+  app: text("app").primaryKey(),
+  migrateToken: text("migrate_token").notNull(),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+});

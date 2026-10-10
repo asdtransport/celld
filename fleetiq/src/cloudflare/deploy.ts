@@ -86,7 +86,7 @@ export async function deployToCloudflare(app: App, link: AppTarget, target: Targ
       // 2. resources
       const need = resourceNeeds(app.name, cfg);
       const ids: CfResourceIds = { d1: {}, kv: {} };
-      const made: Record<string, unknown> = {};
+      const made: Record<string, any> = link.resources ? JSON.parse(link.resources) : {};
       if (!opts.dryRun) {
         for (const d of need.d1) { const r = await cf.ensureD1(d.name); ids.d1[d.name] = r.id; say(`D1 ${d.name}: ${r.created ? "created" : "exists"} ${r.id}`); }
         for (const k of need.kv) { const r = await cf.ensureKv(k.name); ids.kv[k.name] = r.id; say(`KV ${k.name}: ${r.created ? "created" : "exists"} ${r.id}`); }
@@ -109,6 +109,15 @@ export async function deployToCloudflare(app: App, link: AppTarget, target: Targ
           if (!a.teamDomain) throw new DeployError("this account has no Zero Trust team domain; set up Zero Trust, or turn Access off");
           access = { aud: a.aud, teamDomain: a.teamDomain };
           trepo.setLinkState(app.name, target.id, { accessAud: a.aud });
+          made.accessAppId = a.appId;
+          // FleetIQ's own way through Access, for moving data in and out of the app.
+          if (/"FLEETIQ_MIGRATE_TOKEN"/.test(JSON.stringify(cfg.vars ?? {}))) {
+            const st = await cf.ensureServiceToken(`fleetiq-${link.workerName}`, made.serviceToken ?? null);
+            await cf.allowServiceToken(a.appId, st.id);
+            made.serviceToken = { id: st.id, clientId: st.clientId, clientSecret: st.clientSecret };
+            trepo.setLinkState(app.name, target.id, { resources: JSON.stringify(made) });
+            say(`Access service token for FleetIQ: ${st.created ? "created" : "ready"}`);
+          }
           say(`Access: ${a.created ? "created" : "found"} the app for ${link.hostname} (AUD ${a.aud.slice(0, 12)}…), allowing ${allow.join(", ")}; ${link.healthPath} bypassed`);
         }
       } else say(link.hostname ? `No Access gate on ${link.hostname}: the app is public` : "No custom hostname: deploying to workers.dev without Access (public)");
@@ -140,6 +149,10 @@ export async function deployToCloudflare(app: App, link: AppTarget, target: Targ
         return;
       }
       version = /Current Version ID:\s*([0-9a-f-]{8,})/i.exec(b.logs)?.[1] ?? null;
+      if (/"FLEETIQ_MIGRATE_TOKEN"/.test(JSON.stringify(cfg.vars ?? {}))) {
+        await cf.putSecret(link.workerName, "FLEETIQ_MIGRATE_TOKEN", repo.migrateToken(app.name));
+        say("Set the FLEETIQ_MIGRATE_TOKEN secret (data moves enabled)");
+      }
       const devUrl = /https:\/\/[a-z0-9.-]+\.workers\.dev/i.exec(b.logs)?.[0] ?? null;
       const url = link.hostname ? `https://${link.hostname}` : devUrl;
       trepo.setLinkState(app.name, target.id, { resources: JSON.stringify(made), url, lastVersion: version, lastDeployAt: Math.floor(Date.now() / 1000) });

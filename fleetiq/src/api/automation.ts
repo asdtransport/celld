@@ -7,6 +7,7 @@ import * as repo from "../lib/repo";
 import { mintToken, publicToken } from "../lib/tokens";
 import { DeployError, deployFromSource, deploying } from "../services/deploy";
 import { fleetOf } from "../services/fleet";
+import { GithubError, commitStatus, ensureWebhook } from "../services/github";
 import { SourceError, fetchSource, validRepo, verifyGithubSignature } from "../services/source";
 import { failure, requireApp } from "./util";
 
@@ -33,6 +34,10 @@ const GitDeploy = z.object({
 const identity = (c: Context) => c.get("identity" as never) as Identity;
 const randomSecret = () => Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url");
 const consoleUrl = (c: Context) => config.publicUrl || new URL(c.req.url).origin.replace(/^http:/, c.req.header("x-forwarded-proto") === "https" ? "https:" : "http:");
+
+// GitHub commit statuses for a deploy of `app` from `src` (context "fleetiq/<app>", links to the app page).
+const reporter = (base: string, app: string, src: { repo: string; token: string | null }) =>
+  (state: "pending" | "success" | "failure", sha: string, d: string) => commitStatus(src, sha, state, d, `${base}/app?name=${encodeURIComponent(app)}`, `fleetiq/${app}`);
 
 const sourceView = (c: Context, app: string) => {
   const s = repo.getSource(app); if (!s) return null;
@@ -86,7 +91,27 @@ export function automationRoutes(api: Hono) {
     const token = b.token === undefined ? prev?.token ?? null : b.token || null;
     repo.putSource({ app: app.name, repo: b.repo, ref: b.ref, path: b.path.replace(/^\/+|\/+$/g, ""), token, autoDeploy: b.autoDeploy ? 1 : 0, checks: b.checks ? 1 : 0, webhookSecret: prev?.webhookSecret ?? randomSecret() });
     repo.writeAudit({ actor: actorOf(c), action: "source.set", target: app.name, outcome: "ok", detail: `${b.repo}@${b.ref}${b.path ? ` /${b.path}` : ""}${b.autoDeploy ? ", deploy on push" : ""}` });
-    return c.json(sourceView(c, app.name));
+    // With deploy-on-push and a token, register the webhook on GitHub right away.
+    let webhook: unknown = null;
+    const saved = repo.getSource(app.name)!;
+    if (b.autoDeploy && (saved.token || config.githubToken)) {
+      const v = sourceView(c, app.name)!;
+      webhook = await ensureWebhook(saved, v.webhookUrl, saved.webhookSecret).then((r) => ({ ok: true, ...r })).catch((e) => ({ ok: false, error: e.message }));
+    }
+    return c.json({ ...sourceView(c, app.name), webhook });
+  });
+  api.post("/api/apps/:name/source/webhook", async (c) => {
+    const { app, res } = requireApp(c); if (!app) return res;
+    const s = repo.getSource(app.name); if (!s) return c.json({ error: "set a Git source first" }, 404);
+    const v = sourceView(c, app.name)!;
+    try {
+      const r = await ensureWebhook(s, v.webhookUrl, s.webhookSecret);
+      repo.writeAudit({ actor: actorOf(c), action: "source.webhook", target: app.name, outcome: "ok", detail: `${r.action} on ${s.repo}` });
+      return c.json({ ok: true, ...r, url: v.webhookUrl });
+    } catch (e) {
+      if (e instanceof GithubError) return c.json({ error: e.message }, e.status as any);
+      return failure(c, e);
+    }
   });
   api.post("/api/apps/:name/source/rotate-secret", (c) => {
     const { app, res } = requireApp(c); if (!app) return res;
@@ -115,6 +140,7 @@ export function automationRoutes(api: Hono) {
         label: `${src.repo}@${ref}`, path: b.path ?? src.path, checks: b.checks ?? !!src.checks,
         fetch: () => fetchSource(src, ref),
         onCommit: (sha) => { if (!b.repo) repo.setSourceCommit(app.name, sha); },
+        report: reporter(consoleUrl(c), app.name, { repo: src.repo, token: (src as any).token ?? null }),
       }, actorOf(c));
       return c.json(c.req.query("wait") ? await waitFor(d.id, 240_000) : d, 202);
     } catch (e) { return failure(c, e); }
@@ -171,6 +197,7 @@ export function automationRoutes(api: Hono) {
 
 // GitHub push webhook: lives outside /api so it needs no session; the HMAC signature is the auth.
 export function hookRoutes(app: Hono) {
+  app.get("/hooks/github/:app", (c) => c.text(`This is FleetIQ's GitHub webhook for ${c.req.param("app")}. GitHub sends POST requests here; opening it in a browser does nothing.\nIn GitHub: Settings → Webhooks → this URL, content type application/json, the secret from the app's Source panel, just the push event.\n`, 405, { allow: "POST" }));
   app.post("/hooks/github/:app", async (c) => {
     const name = c.req.param("app");
     const a = repo.getApp(name); const src = repo.getSource(name);
@@ -183,7 +210,12 @@ export function hookRoutes(app: Hono) {
     const event = c.req.header("x-github-event");
     if (event === "ping") return c.json({ ok: true, pong: true });
     if (event !== "push") return c.json({ ok: true, ignored: `event ${event}` });
-    let p: any; try { p = JSON.parse(new TextDecoder().decode(body)); } catch { return c.json({ error: "bad JSON" }, 400); }
+    // GitHub signs the raw body either way; the form content type wraps the JSON in payload=….
+    let p: any;
+    try {
+      const raw = new TextDecoder().decode(body);
+      p = JSON.parse((c.req.header("content-type") ?? "").includes("x-www-form-urlencoded") ? new URLSearchParams(raw).get("payload") ?? "" : raw);
+    } catch { return c.json({ error: "bad payload: set the webhook's content type to application/json" }, 400); }
     if (p.ref !== `refs/heads/${src.ref}`) return c.json({ ok: true, ignored: `push to ${p.ref}, watching refs/heads/${src.ref}` });
     if (!src.autoDeploy) return c.json({ ok: true, ignored: "deploy on push is off for this application" });
     const sha = String(p.after ?? "");
@@ -191,6 +223,7 @@ export function hookRoutes(app: Hono) {
       const d = await deployFromSource(a, {
         label: `${src.repo}@${sha.slice(0, 7)} (push)`, path: src.path, checks: !!src.checks,
         fetch: () => fetchSource(src, sha || src.ref), onCommit: (s) => repo.setSourceCommit(name, s),
+        report: reporter(config.publicUrl || new URL(c.req.url).origin, name, src),
       }, `github push by ${String(p.pusher?.name ?? "unknown").slice(0, 60)}`);
       return c.json({ ok: true, deployment: d.id }, 202);
     } catch (e: any) {

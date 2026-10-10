@@ -152,3 +152,40 @@ test("fetchSource resolves the ref to a commit, downloads that commit, and retri
     await expect(fetchSource({ repo: "o/r", ref: "main", token: "stale" })).rejects.toThrow("refused access");
   } finally { config.githubApi = prev.api; config.githubToken = prev.tok; srv.stop(true); }
 });
+
+test("GitHub write side: webhook created then updated, statuses reported, form payloads accepted", async () => {
+  const { ensureWebhook, commitStatus } = await import("./services/github");
+  const hooks: any[] = []; const statuses: any[] = [];
+  const gh = Bun.serve({ port: 0, async fetch(req) {
+    const u = new URL(req.url);
+    if (req.headers.get("authorization") !== "Bearer ghp_good") return Response.json({ message: "Not Found" }, { status: 404 });
+    if (u.pathname === "/repos/o/r/hooks" && req.method === "GET") return Response.json(hooks);
+    if (u.pathname === "/repos/o/r/hooks" && req.method === "POST") { const h = { id: hooks.length + 1, ...((await req.json()) as object) }; hooks.push(h); return Response.json(h, { status: 201 }); }
+    const m = /^\/repos\/o\/r\/hooks\/(\d+)$/.exec(u.pathname);
+    if (m && req.method === "PATCH") { Object.assign(hooks.find((h) => h.id === Number(m[1]))!, (await req.json()) as object); return Response.json({}); }
+    if (u.pathname.startsWith("/repos/o/r/statuses/")) { statuses.push({ sha: u.pathname.split("/").pop(), ...((await req.json()) as object) }); return Response.json({}, { status: 201 }); }
+    return Response.json({ message: "?" }, { status: 500 });
+  } });
+  const prev = config.githubApi; const prevTok = config.githubToken; config.githubApi = `http://localhost:${gh.port}`; config.githubToken = "";
+  try {
+    const src = { repo: "o/r", token: "ghp_good" };
+    expect((await ensureWebhook(src, "https://c/hooks/github/a", "s1")).action).toBe("created");
+    expect((await ensureWebhook(src, "https://c/hooks/github/a", "s2")).action).toBe("updated");
+    expect(hooks).toHaveLength(1); expect(hooks[0].config).toMatchObject({ content_type: "json", secret: "s2" }); expect(hooks[0].events).toEqual(["push"]);
+    await expect(ensureWebhook({ repo: "o/r", token: "bad" }, "u", "s")).rejects.toThrow("Webhooks: read and write");
+    const sha = "a".repeat(40);
+    expect(await commitStatus(src, sha, "success", "notes is live", "https://c/app?name=notes", "fleetiq/notes")).toContain("marked aaaaaaa success");
+    expect(statuses[0]).toMatchObject({ sha, state: "success", context: "fleetiq/notes" });
+    expect(await commitStatus({ repo: "o/r", token: null }, sha, "pending", "x", "", "c")).toContain("no token");
+  } finally { config.githubApi = prev; config.githubToken = prevTok; gh.stop(true); }
+  // A form-encoded webhook (content type left at the GitHub default) is still understood.
+  const app = buildApp();
+  repo.createApp({ name: "notes", prefix: "notes", description: null, managed: 1, desiredNodes: 2, nodeImage: null, healthPath: "/", createdBy: "t" });
+  repo.putSource({ app: "notes", repo: "o/r", ref: "main", path: "", token: null, autoDeploy: 1, checks: 1, webhookSecret: "s3cret" });
+  const body = `payload=${encodeURIComponent(JSON.stringify({ ref: "refs/heads/other", after: "x" }))}`;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("s3cret"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = `sha256=${Buffer.from(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body))).toString("hex")}`;
+  const r = await app.request("/hooks/github/notes", { method: "POST", headers: { "x-github-event": "push", "x-hub-signature-256": sig, "content-type": "application/x-www-form-urlencoded" }, body });
+  expect(((await r.json()) as any).ignored).toContain("refs/heads/other");
+  expect((await app.request("/hooks/github/notes")).status).toBe(405);
+});

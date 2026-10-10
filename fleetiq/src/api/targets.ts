@@ -28,7 +28,11 @@ const targetView = (t: NonNullable<ReturnType<typeof trepo.getTarget>>) => {
   const c = JSON.parse(t.config);
   return { id: t.id, name: t.name, provider: t.provider, accountId: c.accountId, apiToken: c.apiToken ? `••••${String(c.apiToken).slice(-4)}` : "", apps: trepo.linksForTarget(t.id).map((l) => l.app), createdBy: t.createdBy, createdAt: t.createdAt };
 };
-const linkView = (l: NonNullable<ReturnType<typeof trepo.getLink>>) => ({ ...l, access: !!l.access, allow: l.allow ? JSON.parse(l.allow) : [], resources: l.resources ? JSON.parse(l.resources) : null, targetName: trepo.getTarget(l.target)?.name ?? l.target });
+const linkView = (l: NonNullable<ReturnType<typeof trepo.getLink>>) => {
+  const res = l.resources ? JSON.parse(l.resources) : null;
+  if (res?.serviceToken) res.serviceToken = { id: res.serviceToken.id, clientId: res.serviceToken.clientId }; // the secret stays on the server
+  return { ...l, access: !!l.access, allow: l.allow ? JSON.parse(l.allow) : [], resources: res, targetName: trepo.getTarget(l.target)?.name ?? l.target };
+};
 function err(c: Context, e: unknown) {
   if (e instanceof CloudflareError || e instanceof DeployError || e instanceof SourceError) return c.json({ error: e.message }, e.status as any);
   throw e;

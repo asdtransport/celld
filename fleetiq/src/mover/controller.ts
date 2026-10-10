@@ -134,7 +134,8 @@ export async function restoreApp(opts: { endpoint: string; prefix: string; app: 
   return startRun({
     label: `restore ${target.name}`, actor: opts.actor, dryRun: opts.dryRun,
     src: { endpoint: opts.endpoint, prefix: opts.prefix }, dst: { endpoint: FLEET_ENDPOINT, prefix: target.prefix },
-    mode: "mirror", compare: "quick", verify: true,
+    // Checksums where both sides have them: backup copies are newer than the originals, so time would mark everything changed.
+    mode: "mirror", compare: "checksum", verify: true,
     before: async (log) => {
       if (app?.managed) { log(`Stopping ${app.name}'s nodes before overwriting its data`); await scaleNodes(app, 0); }
       log(created ? `Created application ${target.name}` : `Restoring over ${target.name}'s data (an exact copy of the backup)`);
