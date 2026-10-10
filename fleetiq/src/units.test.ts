@@ -62,7 +62,9 @@ test("bindings are grouped from the deployed manifest", () => {
   const b = bindingsOf({ crons: ["0 * * * *"], queue_consumers: [{ queue: "q" }], raw_metadata: { bindings: [
     { type: "kv", name: "KV", id: "app-kv" }, { type: "d1", name: "DB", database_name: "app", database_id: "app" },
     { type: "durable_object_namespace", name: "APP", class_name: "AppData" }, { type: "plain_text", name: "MODE", text: "x" },
+    { type: "plain_text", name: "FLEETIQ_MIGRATE_TOKEN", text: "s3cret" }, { type: "plain_text", name: "AUTH_PUBLIC_KEY_B64", text: "MFkw" },
   ] } });
+  expect(b.vars[1]!.value).toBe("(hidden)"); expect(b.vars[2]!.value).toBe("MFkw");
   expect(b.kv[0]!.id).toBe("app-kv"); expect(b.d1[0]!.name).toBe("app"); expect(b.durableObjects[0]!.className).toBe("AppData");
   expect(b.consumers).toEqual(["q"]); expect(b.crons).toHaveLength(1); expect(b.vars[0]!.name).toBe("MODE");
 });

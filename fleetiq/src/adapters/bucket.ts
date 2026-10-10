@@ -90,6 +90,8 @@ export async function versions(prefix: string, script: string): Promise<VersionI
 export const manifest = async (prefix: string, script: string, version: string) =>
   (await getJson<any>(`${prefix}/deploy/${script}/${version}/manifest.json`))?.value ?? null;
 
+const SECRET_VAR = /TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|API_?KEY/i;
+
 // Bindings declared by the current deployment, grouped for the data explorer.
 export function bindingsOf(manifest: any) {
   const b: any[] = manifest?.raw_metadata?.bindings ?? [];
@@ -99,7 +101,8 @@ export function bindingsOf(manifest: any) {
     d1: b.filter((x) => x.type === "d1").map((x) => ({ binding: x.name, name: x.database_name, id: x.database_id })),
     queues: b.filter((x) => x.type === "queue").map((x) => ({ binding: x.name, queue: x.queue })),
     r2: b.filter((x) => x.type === "r2_bucket").map((x) => ({ binding: x.name, bucket: x.bucket_name })),
-    vars: b.filter((x) => x.type === "plain_text").map((x) => ({ name: x.name, value: x.text })),
+    // Values of secret-looking vars (FLEETIQ_MIGRATE_TOKEN, *_SECRET, *_PASSWORD…) never leave FleetIQ.
+    vars: b.filter((x) => x.type === "plain_text").map((x) => ({ name: x.name, value: SECRET_VAR.test(x.name) && x.text ? "(hidden)" : x.text })),
     consumers: (manifest?.queue_consumers ?? []).map((c: any) => c.queue),
     crons: manifest?.crons ?? [],
   };
