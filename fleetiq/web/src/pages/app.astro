@@ -12,7 +12,8 @@ import Drawer from "../components/Drawer.astro";
     <div class="actions">
       <button class="btn" type="button" id="diag-btn">Run diagnostics</button>
       <button class="btn" type="button" data-drawer-open="scale" data-operator id="scale-btn" hidden>Scale nodes</button>
-      <button class="btn primary" type="button" data-drawer-open="deploy" data-operator>Deploy a version</button>
+      <button class="btn" type="button" data-drawer-open="deploy" data-operator>Upload a version</button>
+      <button class="btn primary" type="button" id="git-deploy-btn" data-operator hidden>Deploy from Git</button>
     </div>
   </header>
 
@@ -33,6 +34,11 @@ import Drawer from "../components/Drawer.astro";
       <div class="panel-body" id="summary"><div class="skeleton">Loading</div></div>
     </section>
   </div>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Source</h2><button class="btn sm" type="button" data-drawer-open="git" data-operator id="git-edit-btn">Connect GitHub</button></div>
+    <div class="panel-body" id="source"><div class="skeleton">Loading</div></div>
+  </section>
 
   <section class="panel" style="margin-top:18px">
     <div class="panel-head"><h2>Deployment history</h2></div>
@@ -65,6 +71,20 @@ import Drawer from "../components/Drawer.astro";
     </form>
   </Drawer>
 
+  <Drawer id="git" title="Git source" submit="Save source" formId="git-form">
+    <form id="git-form">
+      <label class="field"><span>Repository</span><input type="text" name="repo" required spellcheck="false" placeholder="asdtransport/my-app" />
+        <small><code>owner/repo</code> on GitHub, or an https URL to a <code>.tar.gz</code>.</small></label>
+      <label class="field"><span>Branch, tag or commit</span><input type="text" name="ref" value="main" spellcheck="false" /></label>
+      <label class="field"><span>Project folder</span><input type="text" name="path" spellcheck="false" placeholder="(repo root)" />
+        <small>Where <code>wrangler.jsonc</code> is, inside the repo. Leave empty to use the root or find it.</small></label>
+      <label class="field"><span>GitHub token</span><input type="password" name="token" autocomplete="off" placeholder="Only for private repos" />
+        <small>A fine-grained token with read access to this repo’s contents. Leave empty to keep the saved one.</small></label>
+      <label class="check"><input type="checkbox" name="checks" checked /><span>Run the type check and tests while building<small>The deploy stops if they fail.</small></span></label>
+      <label class="check"><input type="checkbox" name="autoDeploy" /><span>Deploy on every push<small>Add the webhook shown on this page to the GitHub repo.</small></span></label>
+    </form>
+  </Drawer>
+
   <Drawer id="log" title="Deployment log">
     <div id="log-body"></div>
   </Drawer>
@@ -90,7 +110,67 @@ import Drawer from "../components/Drawer.astro";
       renderNodes(app, fleet);
       renderSummary(app, fleet, bindings, routes);
     } catch (e) { errorPanel($("#nodes"), e, load); }
-    loadVersions(); loadHistory();
+    loadVersions(); loadHistory(); loadSource();
+  }
+
+  // ---- Git source ----
+  let source: any = null;
+  async function loadSource() {
+    const el = $("#source");
+    try {
+      source = await api<any>(`/api/apps/${encodeURIComponent(name)}/source`);
+      $("#git-deploy-btn").hidden = !source;
+      $("#git-edit-btn").textContent = source ? "Edit" : "Connect GitHub";
+      if (!source) { el.innerHTML = `<p style="margin:0;color:var(--ink-2)">Connect a GitHub repo to build and deploy this application from source, by button, API or on every push. FleetIQ builds in a throwaway container, so nothing needs installing on your computer.</p>`; return; }
+      const repoLink = /^[\w.-]+\/[\w.-]+$/.test(source.repo) ? `<a href="https://github.com/${esc(source.repo)}/tree/${encodeURIComponent(source.ref)}${source.path ? `/${esc(source.path)}` : ""}" rel="noopener" target="_blank">${esc(source.repo)}</a>` : esc(source.repo);
+      el.innerHTML = `<dl class="kv-list">
+        <dt>Repository</dt><dd>${repoLink}${source.hasToken ? ` <span class="tag">private, token saved</span>` : ""}</dd>
+        <dt>Builds</dt><dd><code>${esc(source.ref)}</code>${source.path ? `, folder <code>${esc(source.path)}</code>` : ""}${source.checks ? "" : " (checks skipped)"}</dd>
+        <dt>Last built commit</dt><dd>${source.lastCommit ? `<code>${esc(source.lastCommit.slice(0, 12))}</code>` : "None yet"}</dd>
+        <dt>Deploy on push</dt><dd>${source.autoDeploy ? `<span class="status ok">On</span>` : `<span class="status off">Off</span>`}</dd>
+        ${source.webhookSecret ? `<dt>GitHub webhook</dt><dd>Payload URL <code>${esc(source.webhookUrl)}</code>, content type <code>application/json</code>, secret <code class="copyable" id="wh-secret" title="Click to copy">${esc(source.webhookSecret)}</code>, just the push event.</dd>` : ""}
+      </dl>`;
+      document.getElementById("wh-secret")?.addEventListener("click", () => navigator.clipboard.writeText(source.webhookSecret).then(() => toast("Secret copied")).catch(() => {}));
+      const f = $<HTMLFormElement>("#git-form");
+      (f.elements.namedItem("repo") as HTMLInputElement).value = source.repo;
+      (f.elements.namedItem("ref") as HTMLInputElement).value = source.ref;
+      (f.elements.namedItem("path") as HTMLInputElement).value = source.path;
+      (f.elements.namedItem("checks") as HTMLInputElement).checked = source.checks;
+      (f.elements.namedItem("autoDeploy") as HTMLInputElement).checked = source.autoDeploy;
+    } catch (e) { errorPanel(el, e, loadSource); }
+  }
+  $<HTMLFormElement>("#git-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target as HTMLFormElement);
+    const body: any = { repo: String(f.get("repo")).trim(), ref: String(f.get("ref") || "main").trim(), path: String(f.get("path") || "").trim(), checks: f.get("checks") === "on", autoDeploy: f.get("autoDeploy") === "on" };
+    if (f.get("token")) body.token = String(f.get("token"));
+    if (await act(document.querySelector('button[form="git-form"]'), () => api(`/api/apps/${encodeURIComponent(name)}/source`, { method: "PUT", json: body }), "Source saved")) {
+      (document.getElementById("git") as HTMLDialogElement).close(); loadSource();
+    }
+  });
+  $("#git-deploy-btn").addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget as HTMLButtonElement;
+    let dep: any = null;
+    if (!(await act(btn, async () => { dep = await api(`/api/apps/${encodeURIComponent(name)}/deploy/git`, { method: "POST", json: {} }); }, `Building ${source?.repo}@${source?.ref}`)) || !dep) return;
+    showLog(dep.id, true);
+  });
+
+  // Live log for a deployment; refreshes while it runs.
+  async function showLog(id: string, live = false) {
+    const dlg = document.getElementById("log") as HTMLDialogElement;
+    if (!dlg.open) dlg.showModal();
+    const draw = (d: any) => {
+      const pre = document.getElementById("live-log");
+      const atBottom = !pre || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+      $("#log-body").innerHTML = `<p style="margin:0 0 10px"><span class="status ${statusClass(d.status)}">${d.status === "running" ? "Building and deploying" : esc(d.status)}</span> ${esc(when(d.startedAt))}${d.source ? `<span class="sub">${esc(d.source)}</span>` : ""}</p><pre class="log" id="live-log" style="max-height:60vh">${esc(d.log || "Starting…")}</pre>`;
+      const np = document.getElementById("live-log")!; if (atBottom) np.scrollTop = np.scrollHeight;
+    };
+    let d = await api<any>(`/api/deployments/${id}`); draw(d);
+    while ((live || d.status === "running") && d.status === "running" && dlg.open) {
+      await new Promise((r) => setTimeout(r, 2000));
+      d = await api<any>(`/api/deployments/${id}`); draw(d);
+    }
+    if (d.status !== "running") { loadHistory(); if (d.status === "succeeded") { toast(`Deployed ${short(d.version)}`); load(); } }
   }
 
   function renderNodes(app: any, fleet: any) {
@@ -163,7 +243,7 @@ import Drawer from "../components/Drawer.astro";
       el.innerHTML = ds.length ? `<table class="data"><thead><tr><th>Change</th><th>Result</th><th>When</th></tr></thead><tbody>${
         ds.map((d) => {
           const reason = d.status === "failed" ? String(d.log ?? "").trim().split("\n").pop() : "";
-          const what = d.status === "failed"
+          const what = d.status === "running" ? `Building and deploying ${esc(d.source ?? "")}` : d.status === "failed"
             ? `${d.kind === "rollback" ? "Rollback" : "Deploy"} of ${esc(d.kind === "rollback" ? short(d.source) : d.source ?? "upload")} rejected`
             : d.kind === "rollback" ? `Rolled back <code>${esc(short(d.previousVersion))}</code> to <code>${esc(short(d.version))}</code>`
             : d.previousVersion ? `Deployed <code>${esc(short(d.version))}</code>, replacing <code>${esc(short(d.previousVersion))}</code>` : `Deployed <code>${esc(short(d.version))}</code>, the first version`;
@@ -171,11 +251,8 @@ import Drawer from "../components/Drawer.astro";
           <td><span class="status ${statusClass(d.status)}">${d.status === "succeeded" ? "Succeeded" : d.status === "failed" ? "Failed" : "Running"}</span></td>
           <td style="white-space:nowrap">${ago(d.startedAt)} <button class="btn sm" type="button" data-log="${esc(d.id)}">Log</button></td></tr>`; }).join("")}</tbody></table>`
         : `<div class="empty">No deployments from FleetIQ yet. Versions deployed with the celld CLI still appear under Versions.</div>`;
-      el.querySelectorAll<HTMLButtonElement>("[data-log]").forEach((b) => b.addEventListener("click", async () => {
-        const d = await api<any>(`/api/deployments/${b.dataset.log}`);
-        $("#log-body").innerHTML = `<p style="margin:0 0 10px"><span class="status ${statusClass(d.status)}">${esc(d.status)}</span> ${esc(when(d.startedAt))}</p><pre class="log">${esc(d.log || "No output")}</pre>`;
-        (document.getElementById("log") as HTMLDialogElement).showModal();
-      }));
+      el.querySelectorAll<HTMLButtonElement>("[data-log]").forEach((b) => b.addEventListener("click", () => showLog(b.dataset.log!)));
+      if (ds.some((d) => d.status === "running")) setTimeout(loadHistory, 4000);
     } catch (e) { errorPanel(el, e, loadHistory); }
   }
 

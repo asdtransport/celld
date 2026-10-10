@@ -73,6 +73,28 @@ The app must already run on celld: `wrangler.jsonc` at the project root and a st
 3. **Routes**: add `my-app.<app domain>` → `my-app` (for example `crm.179-236-68-136.sslip.io`).
    The edge gets the HTTPS certificate on the first visit; nothing to run on the server.
 
+### Or deploy straight from GitHub
+
+On the app's page, **Source → Connect GitHub** (repo, branch, project folder), then **Deploy from Git**.
+FleetIQ downloads that commit, builds it in a throwaway container (type check, tests, web build) and
+deploys it. Turn on **Deploy on every push** and add the webhook shown there to the GitHub repo to ship
+on `git push`. Private repos need a read-only GitHub token on the same form.
+
+## API, Claude and automation
+
+Everything in the console is an API. In **API & access**, create a token per script, pipeline or
+assistant (operator or viewer, with an expiry), then use any of:
+
+| From | How |
+|---|---|
+| Claude (claude.ai, desktop, mobile) | Settings → Connectors → add `https://console.<domain>/mcp/t/<token>` |
+| Claude Code | `claude mcp add --transport http fleetiq https://console.<domain>/mcp --header "Authorization: Bearer <token>"` |
+| Scripts, CI | `curl -H "Authorization: Bearer <token>" https://console.<domain>/api/system` — every endpoint is in `/api/openapi.json` |
+| Terminal | `fleetiq/bin/fleetiq` (needs curl): `fleetiq status`, `fleetiq deploy my-app --git`, `fleetiq logs my-app` |
+
+Tokens skip the sign-in page at the edge but FleetIQ checks each one (only a hash is stored), records
+every change under the token's name in Activity, and refuses to let a token create more tokens.
+
 ## Upgrade
 
 Run the same two install lines again. It keeps your passwords, sign-in key, apps and data.

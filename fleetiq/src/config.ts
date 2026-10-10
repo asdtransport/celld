@@ -31,6 +31,15 @@ export const config = {
   viewerRoles: env("VIEWER_ROLES", "authp/user,authp/admin").split(","),
   operatorRoles: env("OPERATOR_ROLES", "authp/admin").split(","),
   maxUploadBytes: Number(env("MAX_UPLOAD_MB", "64")) * 1024 * 1024,
+  // Builds from source run in throwaway containers from this image (FleetIQ's own: bun + pack script).
+  builderImage: env("BUILDER_IMAGE", "fleetiq:latest"),
+  builderMemoryMb: Number(env("BUILDER_MEMORY_MB", "3072")),
+  buildTimeoutMs: Number(env("BUILD_TIMEOUT_MIN", "15")) * 60_000,
+  builderCaFile: env("BUILDER_CA_FILE"),          // extra CA for the build (TLS-intercepting proxies)
+  githubToken: env("GITHUB_TOKEN"),                // default token for private GitHub repos
+  githubApi: env("GITHUB_API", "https://api.github.com"),
+  // The console's public URL, for webhook and MCP addresses shown in the UI.
+  publicUrl: env("CONSOLE_URL", "").replace(/\/+$/, ""),
 };
 
 export function bucketName(): string {

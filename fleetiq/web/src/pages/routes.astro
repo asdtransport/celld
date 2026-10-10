@@ -10,7 +10,7 @@ import Drawer from "../components/Drawer.astro";
     </div>
     <div class="actions"><button class="btn primary" type="button" data-drawer-open="route" data-operator>Add route</button></div>
   </header>
-  <div class="notice info" style="margin-bottom:18px">A public hostname also needs to reach the load balancer: point it at the edge, and add it to the edge’s Caddyfile if it isn’t covered by a wildcard.</div>
+  <div class="notice info" style="margin-bottom:18px">Point the hostname’s DNS at this server (or use a name like <code>app.1-2-3-4.sslip.io</code>). The edge asks FleetIQ before it gets a certificate, so only hostnames listed here get HTTPS.</div>
   <section class="panel"><div class="table-wrap" id="routes"><div class="empty skeleton">Loading routes</div></div></section>
   <section class="panel">
     <div class="panel-head"><h2>Upstream health</h2><span class="hint">Live from the load balancer</span></div>

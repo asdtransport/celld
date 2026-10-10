@@ -31,6 +31,7 @@ COPY --from=build /app/node_modules /app/node_modules
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/src ./src
+COPY --from=build /app/bin ./bin
 COPY --from=build /app/web/dist ./web/dist
 RUN ESB=$(find /app/node_modules -path '*/@esbuild/*/bin/esbuild' -type f | head -1); test -n "$ESB" && cp "$ESB" /usr/local/bin/esbuild && esbuild --version && celld --version
 ENV NODE_ENV=production BUILD_SHA=${BUILD_SHA} PORT=8790 FLEETIQ_DATA=/data CELLD_ESBUILD=/usr/local/bin/esbuild WEB_DIST=/app/web/dist

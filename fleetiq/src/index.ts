@@ -50,9 +50,10 @@ async function staticFile(pathname: string): Promise<Response> {
 const port = Number(process.env.PORT ?? 8787);
 Bun.serve({
   port, maxRequestBodySize: config.maxUploadBytes + 1024 * 1024,
+  idleTimeout: 255, // seconds; deploy uploads and /wait calls run long
   async fetch(req) {
     const u = new URL(req.url);
-    if (u.pathname.startsWith("/api/")) {
+    if (u.pathname.startsWith("/api/") || u.pathname.startsWith("/hooks/") || u.pathname === "/mcp" || u.pathname.startsWith("/mcp/")) {
       const r = await app.fetch(req);
       for (const [k, v] of Object.entries(headers)) if (k !== "content-security-policy") r.headers.set(k, v);
       r.headers.set("cache-control", "no-store");

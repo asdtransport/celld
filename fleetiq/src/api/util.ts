@@ -5,12 +5,13 @@ import { UpstreamError } from "../adapters/http";
 import { actorOf } from "../auth";
 import * as repo from "../lib/repo";
 import { DeployError } from "../services/deploy";
+import { SourceError } from "../services/source";
 import { ZodError } from "zod";
 
 // Turn adapter failures into plain, actionable API errors (the UI shows `error` verbatim).
 export function failure(c: Context, e: unknown) {
   if (e instanceof ZodError) throw e;
-  if (e instanceof DeployError) return c.json({ error: e.message }, e.status as any);
+  if (e instanceof DeployError || e instanceof SourceError) return c.json({ error: e.message }, e.status as any);
   if (e instanceof CelldError) return c.json({ error: e.message, source: "celld" }, 502);
   if (e instanceof BucketError) return c.json({ error: `fleet bucket: ${e.message}`, source: "bucket" }, 502);
   if (e instanceof UpstreamError) return c.json({ error: e.message, source: "upstream" }, e.status === 404 ? 404 : 502);

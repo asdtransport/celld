@@ -105,6 +105,16 @@ https:// {
 	route /api/health {
 		reverse_proxy {$CONSOLE_UPSTREAM:frps:6001}
 	}
+	# Machines: API tokens (fiq_…), the MCP endpoint, GitHub webhooks and the API description.
+	# FleetIQ authenticates these itself (token hash, HMAC signature), so they skip the sign-in page.
+	@machine header Authorization "Bearer fiq_*"
+	route @machine {
+		reverse_proxy {$CONSOLE_UPSTREAM:frps:6001}
+	}
+	@selfauth path /mcp /mcp/* /hooks/* /api/openapi.json
+	route @selfauth {
+		reverse_proxy {$CONSOLE_UPSTREAM:frps:6001}
+	}
 	route {
 		authorize with fleetiq_policy
 		reverse_proxy {$CONSOLE_UPSTREAM:frps:6001}

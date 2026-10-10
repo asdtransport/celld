@@ -43,6 +43,7 @@ done
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 ok()   { printf '    \033[32m✔\033[0m %s\n' "$*"; }
 die()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+warn() { printf '    \033[33m!\033[0m %s\n' "$*"; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # ---------------------------------------------------------------- preflight
@@ -132,7 +133,11 @@ APP_AUTH_PUBLIC_KEY_B64=$PUBKEY
 APP_AUTH_ALLOWED_ROLES=authp/admin,authp/user
 CELLIQ_PORT=127.0.0.1:8080
 EDGE_URL=https://$APP_HOST$( [ "$HTTPS_PORT" != 443 ] && echo ":$HTTPS_PORT" )
+CONSOLE_URL=https://$CONSOLE_HOST$( [ "$HTTPS_PORT" != 443 ] && echo ":$HTTPS_PORT" )
+GITHUB_TOKEN=${FLEETIQ_GITHUB_TOKEN:-}
 EOF
+# Extra settings for FleetIQ and the nodes (one KEY=value per line), e.g. BUILDER_CA_FILE behind a TLS proxy.
+[ -n "${FLEETIQ_EXTRA_ENV:-}" ] && printf '%s\n' "$FLEETIQ_EXTRA_ENV" >> celliq/deploy/celld/.env
 TLS_GLOBAL=""; [ "$TLS_MODE" = internal ] && TLS_GLOBAL="local_certs"; [ -n "$EMAIL" ] && [ "$TLS_MODE" = acme ] && TLS_GLOBAL="email $EMAIL"
 [ "$TLS_MODE" = internal ] && echo "EDGE_TLS_INSECURE=1" >> celliq/deploy/celld/.env
 cat > celliq/deploy/oss/.env.edge <<EOF
@@ -179,7 +184,10 @@ if [ "$LOCAL_S3" = 1 ]; then
 fi
 
 say "Starting the fleet and the console"
-$SITE --profile console up -d --no-build >>"$LOG" 2>&1 || die "fleet failed to start — see $LOG"
+# A freshly started bucket can answer 500 for a few seconds; give the deploy job a second try.
+$SITE --profile console up -d --no-build >>"$LOG" 2>&1 \
+  || { warn "fleet not up yet, retrying in 15 s"; sleep 15; $SITE --profile console up -d --no-build >>"$LOG" 2>&1; } \
+  || die "fleet failed to start — see $LOG"
 for i in $(seq 1 90); do curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1 && break; sleep 2; done
 curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1 && ok "fleet healthy: $(curl -fsS http://127.0.0.1:8080/api/health)" || die "fleet did not become healthy — see: $SITE logs node-a"
 

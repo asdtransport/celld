@@ -105,6 +105,7 @@ services:
       FRPC_API: ${FRPC_API:-}             # http://frpc:7400 with the oss-tunnel profile
       AUTH_MODE: ${FLEETIQ_AUTH_MODE:-edge}
       AUTH_PUBLIC_KEY_B64: ${APP_AUTH_PUBLIC_KEY_B64:-}
+      BUILDER_IMAGE: ${FLEETIQ_IMAGE:-fleetiq:latest}   # builds from source run in throwaway copies of this image
     volumes:
       - fleetiq-data:/data
       - lb-admin:/run/caddy-admin

@@ -5,6 +5,8 @@ import * as celld from "../adapters/celld";
 import { run } from "../adapters/exec";
 import { type ReloadResult, reloadNode } from "../adapters/nodes";
 import { config } from "../config";
+import { runBuilder } from "../adapters/docker";
+import { SourceError } from "./source";
 import type { App } from "../db/schema";
 import * as repo from "../lib/repo";
 
@@ -92,76 +94,132 @@ export function configName(text: string): string | null {
   return /"name"\s*:\s*"([^"]+)"/.exec(text.replace(/^\s*\/\/.*$/gm, ""))?.[1] ?? null;
 }
 
-export async function deployUpload(app: App, file: File, actor: string) {
+interface DeployCtx { id: string; releaseDir: string; previous: string | null }
+const newId = () => `dep_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+export const deploying = (app: string) => locks.has(app);
+
+async function begin(app: App, source: string, actor: string): Promise<DeployCtx> {
   if (locks.has(app.name)) throw new DeployError(`a deployment for ${app.name} is already running`, 409);
+  locks.add(app.name);
+  try {
+    const id = newId();
+    const releaseDir = join(appDir(app.name), "releases", id);
+    await mkdir(releaseDir, { recursive: true });
+    const previous = (await bucket.fleetPointer(app.prefix).catch(() => null))?.value.version ?? null;
+    repo.startDeployment({ id, app: app.name, kind: "deploy", source, actor, previousVersion: previous });
+    return { id, releaseDir, previous };
+  } catch (e) { locks.delete(app.name); throw e; }
+}
+
+function fail(app: App, ctx: DeployCtx, log: string[], actor: string, e: any): DeployError {
+  log.push(e instanceof celld.CelldError || e instanceof DeployError || e instanceof SourceError ? e.message : `unexpected: ${e.message}`);
+  repo.finishDeployment(ctx.id, { status: "failed", version: null, log: log.join("\n") });
+  repo.writeAudit({ actor, action: "deploy", target: app.name, outcome: "failed", detail: String(e.message).slice(0, 300) });
+  return e instanceof DeployError ? new DeployError(e.message, e.status) : new DeployError(e.message, e instanceof SourceError ? e.status : 422);
+}
+
+// Validate, extract and deploy one archive that is already in the release dir.
+async function deployArchive(app: App, ctx: DeployCtx, archive: string, log: string[], actor: string) {
+  const { id, releaseDir, previous } = ctx;
+  const listing = await run(["tar", "-tvzf", archive], { timeoutMs: 30_000 });
+  if (listing.code !== 0) throw new DeployError("the upload is not a readable .tar.gz archive");
+  const bad = checkArchiveListing(listing.stdout);
+  if (bad) throw new DeployError(bad);
+  const src = join(releaseDir, "src");
+  await mkdir(src);
+  const x = await run(["tar", "-xzf", archive, "-C", src, "--no-same-owner", "--no-same-permissions"], { timeoutMs: 60_000 });
+  if (x.code !== 0) throw new DeployError(`extract failed: ${x.stderr.slice(0, 300)}`);
+  const root = await findProjectRoot(src);
+  if (!root) throw new DeployError("no wrangler.jsonc or wrangler.json found in the archive");
+  const cfgFile = (await readdir(root)).find((n) => /^wrangler\.jsonc?$/.test(n))!;
+  const name = configName(await Bun.file(join(root, cfgFile)).text());
+  if (name !== app.name) throw new DeployError(`wrangler name is "${name}" but this application is "${app.name}" — rename one so they match`);
+  log.push(`Project ${root.slice(releaseDir.length + 1)} (${cfgFile})`, `Deploying to ${config.bucket}/${app.prefix}`);
+  const cfgPath = join(root, cfgFile);
+  const edge = fillEdgeKey(await Bun.file(cfgPath).text(), config.authPublicKeyB64);
+  if (edge.filled) { await Bun.write(cfgPath, edge.text); log.push("Filled AUTH_PUBLIC_KEY_B64 with this server's edge key"); }
+  let cfg: any = null;
+  try { cfg = parseJsonc(edge.text); } catch (e: any) { throw new DeployError(`${cfgFile} is not valid JSONC: ${e.message}`); }
+  const { version, output } = await celld.deploy(app.prefix, root);
+  log.push(output);
+  repo.setDeploymentLog(id, log.join("\n"));
+  const nodes = await reloadFleet(app, log);
+  let migrateWarn: string | null = null;
+  const dbs = d1WithMigrations(cfg);
+  // A first deploy has no nodes yet: they start once a version exists. Give them a minute.
+  let live = nodes.some((n) => n.outcome !== "unreachable");
+  if (dbs.length && !live) {
+    log.push("Waiting for nodes to start before applying D1 migrations");
+    repo.setDeploymentLog(id, log.join("\n"));
+    live = await waitForNodes(app, 90_000);
+  }
+  if (dbs.length && live) {
+    for (const db of dbs) {
+      try { log.push(`D1 ${db} migrations:`, await celld.d1Migrations(app.prefix, db, root, true)); }
+      catch (e: any) { migrateWarn = `D1 migrations for ${db} failed`; log.push(`D1 ${db} migrations failed: ${e.message}`); }
+    }
+  } else if (dbs.length) {
+    migrateWarn = "D1 migrations were not applied because no node is running; apply them from Data explorer once nodes start";
+    log.push(migrateWarn);
+  }
+  // Keep the last successful project for D1 commands (database identity comes from its config).
+  await unlink(projectDir(app.name)).catch(() => {});
+  await symlink(root, projectDir(app.name));
+  repo.finishDeployment(id, { status: "succeeded", version, log: log.join("\n") });
+  const warn = [reloadSummary(nodes), migrateWarn].filter(Boolean).join("; ") || null;
+  repo.writeAudit({ actor, action: "deploy", target: app.name, outcome: "ok", detail: `${previous ?? "none"} → ${version}${warn ? `; ${warn}` : ""}` });
+  await pruneReleases(app.name, 5);
+  return { ...repo.getDeployment(id)!, nodes, warning: warn };
+}
+
+// Upload of a ready archive (the console's Deploy drawer, the CLI, workiq-pack output). Synchronous.
+export async function deployUpload(app: App, file: File, actor: string) {
   if (!/\.(tar\.gz|tgz)$/i.test(file.name)) throw new DeployError("upload a .tar.gz of the project directory (wrangler.jsonc at its root)");
   if (file.size > config.maxUploadBytes) throw new DeployError(`upload is larger than ${config.maxUploadBytes >> 20} MB`, 413);
-  locks.add(app.name);
-  const id = `dep_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const releaseDir = join(appDir(app.name), "releases", id);
-  const previous = (await bucket.fleetPointer(app.prefix).catch(() => null))?.value.version ?? null;
-  repo.startDeployment({ id, app: app.name, kind: "deploy", source: file.name, actor, previousVersion: previous });
+  const ctx = await begin(app, file.name, actor);
   const log: string[] = [];
   try {
-    await mkdir(releaseDir, { recursive: true });
-    const archive = join(releaseDir, "upload.tgz");
+    const archive = join(ctx.releaseDir, "upload.tgz");
     await Bun.write(archive, file);
-    const listing = await run(["tar", "-tvzf", archive], { timeoutMs: 30_000 });
-    if (listing.code !== 0) throw new DeployError("the upload is not a readable .tar.gz archive");
-    const bad = checkArchiveListing(listing.stdout);
-    if (bad) throw new DeployError(bad);
-    const src = join(releaseDir, "src");
-    await mkdir(src);
-    const x = await run(["tar", "-xzf", archive, "-C", src, "--no-same-owner", "--no-same-permissions"], { timeoutMs: 60_000 });
-    if (x.code !== 0) throw new DeployError(`extract failed: ${x.stderr.slice(0, 300)}`);
-    const root = await findProjectRoot(src);
-    if (!root) throw new DeployError("no wrangler.jsonc or wrangler.json found in the archive");
-    const cfgFile = (await readdir(root)).find((n) => /^wrangler\.jsonc?$/.test(n))!;
-    const name = configName(await Bun.file(join(root, cfgFile)).text());
-    if (name !== app.name) throw new DeployError(`wrangler name is "${name}" but this application is "${app.name}" — rename one so they match`);
-    log.push(`Project ${root.slice(releaseDir.length + 1)} (${cfgFile})`, `Deploying to ${config.bucket}/${app.prefix}`);
-    const cfgPath = join(root, cfgFile);
-    const edge = fillEdgeKey(await Bun.file(cfgPath).text(), config.authPublicKeyB64);
-    if (edge.filled) { await Bun.write(cfgPath, edge.text); log.push("Filled AUTH_PUBLIC_KEY_B64 with this server's edge key"); }
-    let cfg: any = null;
-    try { cfg = parseJsonc(edge.text); } catch (e: any) { throw new DeployError(`${cfgFile} is not valid JSONC: ${e.message}`); }
-    const { version, output } = await celld.deploy(app.prefix, root);
-    log.push(output);
-    const nodes = await reloadFleet(app, log);
-    let migrateWarn: string | null = null;
-    const dbs = d1WithMigrations(cfg);
-    // A first deploy has no nodes yet: they start once a version exists. Give them a minute.
-    let live = nodes.some((n) => n.outcome !== "unreachable");
-    if (dbs.length && !live) {
-      log.push("Waiting for nodes to start before applying D1 migrations");
-      live = await waitForNodes(app, 90_000);
-    }
-    if (dbs.length && live) {
-      for (const db of dbs) {
-        try { log.push(`D1 ${db} migrations:`, await celld.d1Migrations(app.prefix, db, root, true)); }
-        catch (e: any) { migrateWarn = `D1 migrations for ${db} failed`; log.push(`D1 ${db} migrations failed: ${e.message}`); }
-      }
-    } else if (dbs.length) {
-      migrateWarn = "D1 migrations were not applied because no node is running; apply them from Data explorer once nodes start";
-      log.push(migrateWarn);
-    }
-    // Keep the last successful project for D1 commands (database identity comes from its config).
-    await unlink(projectDir(app.name)).catch(() => {});
-    await symlink(root, projectDir(app.name));
-    repo.finishDeployment(id, { status: "succeeded", version, log: log.join("\n") });
-    const warn = [reloadSummary(nodes), migrateWarn].filter(Boolean).join("; ") || null;
-    repo.writeAudit({ actor, action: "deploy", target: app.name, outcome: "ok", detail: `${previous ?? "none"} → ${version}${warn ? `; ${warn}` : ""}` });
-    await pruneReleases(app.name, 5);
-    return { ...repo.getDeployment(id)!, nodes, warning: warn };
-  } catch (e: any) {
-    log.push(e instanceof celld.CelldError || e instanceof DeployError ? e.message : `unexpected: ${e.message}`);
-    repo.finishDeployment(id, { status: "failed", version: null, log: log.join("\n") });
-    repo.writeAudit({ actor, action: "deploy", target: app.name, outcome: "failed", detail: e.message.slice(0, 300) });
-    if (e instanceof DeployError) throw new DeployError(e.message, e.status);
-    throw new DeployError(e.message, 422);
-  } finally {
-    locks.delete(app.name);
-  }
+    return await deployArchive(app, ctx, archive, log, actor);
+  } catch (e: any) { throw fail(app, ctx, log, actor, e); }
+  finally { locks.delete(app.name); }
+}
+
+// Build from source in a builder container, then deploy. Returns at once with the running
+// deployment; follow it at GET /api/deployments/:id (its log fills in as the build runs).
+export async function deployFromSource(app: App, opts: {
+  label: string; fetch: () => Promise<{ tgz: Uint8Array; commit: string | null; label: string }>;
+  path: string; checks: boolean; onCommit?: (sha: string) => void;
+}, actor: string) {
+  const ctx = await begin(app, opts.label, actor);
+  const log: string[] = [];
+  const flush = (extra = "") => repo.setDeploymentLog(ctx.id, log.join("\n") + (extra ? `\n${extra}` : ""));
+  const job = (async () => {
+    try {
+      log.push(`Fetching ${opts.label}`); flush();
+      const src = await opts.fetch();
+      log.push(`Source ${src.label} (${(src.tgz.length / 1024 / 1024).toFixed(1)} MB)`);
+      if (src.commit) { opts.onCommit?.(src.commit); repo.updateDeploymentSource(ctx.id, src.label); }
+      log.push(`Building in a throwaway container (${config.builderImage}${opts.checks ? "" : ", checks skipped"})`); flush();
+      const files = [{ name: "src.tgz", data: src.tgz }];
+      if (config.builderCaFile) files.push({ name: "ca.pem", data: new Uint8Array(await Bun.file(config.builderCaFile).arrayBuffer()) });
+      const b = await runBuilder({
+        image: config.builderImage, files, timeoutMs: config.buildTimeoutMs, memoryMb: config.builderMemoryMb,
+        env: [`APP=${app.name}`, `SUBPATH=${opts.path.replace(/^\/+|\/+$/g, "")}`, `CHECKS=${opts.checks ? 1 : 0}`],
+        onLog: (t) => flush(t.trim()),
+      });
+      log.push(b.logs.trim());
+      if (b.exitCode !== 0 || !b.output) throw new DeployError(`build failed (exit ${b.exitCode})`);
+      const archive = join(ctx.releaseDir, "build.tgz");
+      await Bun.write(archive, b.output);
+      log.push(`Built archive ${(b.output.length / 1024 / 1024).toFixed(1)} MB`);
+      await deployArchive(app, ctx, archive, log, actor);
+    } catch (e: any) { fail(app, ctx, log, actor, e); }
+    finally { locks.delete(app.name); }
+  })();
+  void job;
+  return repo.getDeployment(ctx.id)!;
 }
 
 async function pruneReleases(app: string, keep: number) {

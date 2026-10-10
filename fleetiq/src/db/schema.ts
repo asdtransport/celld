@@ -49,3 +49,32 @@ export const audit = sqliteTable("audit", {
   detail: text("detail"),
 });
 export type AuditEntry = typeof audit.$inferSelect;
+
+// API tokens for scripts, CI and assistants. Only the SHA-256 of the secret is stored.
+export const apiTokens = sqliteTable("api_tokens", {
+  id: text("id").primaryKey(),                   // tok_xxxxxxxx (shown in lists; not secret)
+  name: text("name").notNull(),
+  hash: text("hash").notNull(),
+  role: text("role").notNull(),                  // viewer | operator
+  createdBy: text("created_by").notNull(),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+  expiresAt: integer("expires_at"),              // null = never
+  lastUsedAt: integer("last_used_at"),
+  revokedAt: integer("revoked_at"),
+});
+export type ApiToken = typeof apiTokens.$inferSelect;
+
+// Where an app's source lives, for Deploy from Git and push-to-deploy.
+export const appSources = sqliteTable("app_sources", {
+  app: text("app").primaryKey(),
+  repo: text("repo").notNull(),                  // owner/name on GitHub, or an https URL to a .tar.gz
+  ref: text("ref").notNull().default("main"),
+  path: text("path").notNull().default(""),      // project folder inside the repo
+  token: text("token"),                          // GitHub token for private repos (write-only over the API)
+  autoDeploy: integer("auto_deploy").notNull().default(0),
+  webhookSecret: text("webhook_secret").notNull(),
+  checks: integer("checks").notNull().default(1), // run type check + tests during the build
+  lastCommit: text("last_commit"),
+  updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+export type AppSource = typeof appSources.$inferSelect;

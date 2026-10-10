@@ -66,11 +66,13 @@ const ACTIONS: Record<string, string> = {
   "d1.execute": "Ran SQL on", "d1.migrate": "Migrated", "queue.pause": "Paused queue", "queue.resume": "Resumed queue",
   "queue.purge": "Purged queue", "queue.redrive": "Retried dead letters of", "r2.put": "Uploaded to", "r2.delete": "Deleted from R2",
   "container.restart": "Restarted", "container.start": "Started", "container.stop": "Stopped",
+  "token.create": "Created API token", "token.revoke": "Revoked API token", "source.set": "Set Git source of", "source.remove": "Removed Git source of",
+  "source.rotate-secret": "Rotated webhook secret of", webhook: "Webhook for",
 };
 const VERBS: Record<string, string> = {
   deploy: "deploy", rollback: "roll back", "app.scale": "scale", "app.create": "create", "route.set": "route", "route.remove": "remove the route", "tunnel.create": "add tunnel",
   "tunnel.remove": "remove tunnel", "kv.put": "write KV key", "kv.delete": "delete KV key", "d1.execute": "run SQL on", "d1.migrate": "migrate", "r2.put": "upload to", "r2.delete": "delete from R2",
-  "queue.purge": "purge", "queue.pause": "pause", "queue.resume": "resume", "container.restart": "restart", "container.start": "start", "container.stop": "stop",
+  "queue.purge": "purge", "queue.pause": "pause", "queue.resume": "resume", "container.restart": "restart", "container.start": "start", "container.stop": "stop", webhook: "accept the webhook for",
 };
 // One line for an audit entry: "Deployed board", "Couldn't deploy board", "Refused: POST /api/apps".
 export const auditLine = (e: { action: string; target: string; outcome: string }) =>
@@ -115,7 +117,7 @@ export function errorPanel(el: HTMLElement, e: any, retry?: () => void) {
   if (retry) el.querySelector("button")!.addEventListener("click", retry);
 }
 
-export interface Me { sub: string; email: string | null; name: string | null; roles: string[]; canOperate: boolean; authMode: string }
+export interface Me { sub: string; email: string | null; name: string | null; roles: string[]; canOperate: boolean; authMode: string; via?: string }
 let mePromise: Promise<Me> | null = null;
 export const me = () => (mePromise ??= api<Me>("/api/me"));
 

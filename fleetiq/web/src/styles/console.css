@@ -262,3 +262,16 @@ dialog.confirm .foot { display: flex; gap: 8px; justify-content: flex-end; paddi
   .page-head h1 { font-size: 24px; }
   dialog.drawer { border-radius: 0; }
 }
+
+/* API & access */
+.connect { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; padding: 18px; }
+.connect-item h3 { margin: 0 0 4px; font-size: 14px; }
+.connect-item p { margin: 0 0 8px; color: var(--ink-2); font-size: 13px; }
+.copyable { cursor: copy; white-space: pre-wrap; word-break: break-all; }
+.secret-box { margin-bottom: 18px; }
+.secret-box pre { margin: 10px 0; font-size: 13px; }
+.secret-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+tr.muted td { opacity: .55; }
+.kv-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
+.kv-list dt { color: var(--ink-2); }
+.kv-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }

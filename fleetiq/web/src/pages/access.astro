@@ -1,0 +1,94 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="API & access" active="access">
+  <header class="page-head">
+    <div>
+      <h1>API &amp; access</h1>
+      <p>Everything in this console is also an API. Give scripts, CI and assistants such as Claude their own token, with only the role they need, and revoke it here when you’re done.</p>
+    </div>
+    <div class="actions"><button class="btn primary" type="button" data-drawer-open="new-token" data-operator>Create token</button></div>
+  </header>
+
+  <div id="new-secret"></div>
+
+  <section class="panel">
+    <div class="panel-head"><h2>API tokens</h2><span class="hint">FleetIQ keeps only a hash of each token</span></div>
+    <div class="table-wrap" id="tokens"><div class="empty skeleton">Loading tokens</div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Connect</h2><span class="hint">Replace <code>fiq_…</code> with a token</span></div>
+    <div class="connect" id="connect"></div>
+  </section>
+
+  <Drawer id="new-token" title="Create API token" submit="Create token" formId="token-form">
+    <form id="token-form">
+      <label class="field"><span>Name</span><input type="text" name="name" required maxlength="60" placeholder="Claude chat" autocomplete="off" />
+        <small>Who or what uses it. Activity shows changes under this name.</small></label>
+      <label class="field"><span>Role</span><select name="role"><option value="operator">Operator: deploy, scale, change routes and data</option><option value="viewer">Viewer: read only</option></select></label>
+      <label class="field"><span>Expires</span><select name="expires"><option value="30">In 30 days</option><option value="90" selected>In 90 days</option><option value="365">In a year</option><option value="">Never</option></select></label>
+    </form>
+  </Drawer>
+</Console>
+<script>
+  import { $, act, ago, api, confirmAction, errorPanel, esc, gateOperatorControls, me, toast, when } from "../lib/api";
+  const origin = location.origin;
+
+  function connect() {
+    const block = (title: string, text: string, code: string) => `<div class="connect-item"><h3>${title}</h3><p>${text}</p><pre class="log copyable" tabindex="0">${esc(code)}</pre></div>`;
+    $("#connect").innerHTML = [
+      block("Claude (claude.ai, desktop, mobile)", "Settings → Connectors → Add custom connector, with this URL. The token is part of the URL, so treat the URL as a password.", `${origin}/mcp/t/fiq_…`),
+      block("Claude Code", "Adds FleetIQ’s tools (deploy, scale, routes, data, logs) to Claude Code.", `claude mcp add --transport http fleetiq ${origin}/mcp \\\n  --header "Authorization: Bearer fiq_…"`),
+      block("HTTP API", `Send the token as a bearer header. Every endpoint is described in the <a href="/api/openapi.json">OpenAPI document</a>.`, `curl -H "Authorization: Bearer fiq_…" ${origin}/api/system`),
+      block("Command line", "The <code>fleetiq</code> script ships in the stack bundle (<code>fleetiq/bin/fleetiq</code>). It needs curl.", `export FLEETIQ_URL=${origin} FLEETIQ_TOKEN=fiq_…\nfleetiq status\nfleetiq deploy my-app --git`),
+    ].join("");
+    $("#connect").querySelectorAll<HTMLElement>(".copyable").forEach((el) => el.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(el.textContent ?? ""); toast("Copied"); } catch { /* selection still works */ }
+    }));
+  }
+
+  async function load() {
+    try {
+      const ts = await api<any[]>("/api/tokens");
+      $("#tokens").innerHTML = ts.length ? `<table class="data"><thead><tr><th>Token</th><th>Role</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead><tbody>${
+        ts.map((t) => `<tr${t.active ? "" : ` class="muted"`}><td class="main-cell"><strong>${esc(t.name)}</strong><span class="sub"><code>${esc(t.id)}</code></span></td>
+          <td>${t.role === "operator" ? `<span class="tag teal">Operator</span>` : `<span class="tag">Viewer</span>`}</td>
+          <td>${ago(t.createdAt)}<span class="sub">by ${esc(t.createdBy)}</span></td>
+          <td>${t.revokedAt ? `<span class="status off">Revoked</span>` : t.expiresAt ? (t.active ? `<span title="${esc(when(t.expiresAt))}">${esc(when(t.expiresAt).split(",")[0])}</span>` : `<span class="status off">Expired</span>`) : "Never"}</td>
+          <td>${t.lastUsedAt ? ago(t.lastUsedAt) : `<span class="sub">Never</span>`}</td>
+          <td class="row-actions">${t.active ? `<button class="btn sm danger" type="button" data-operator data-revoke="${esc(t.id)}" data-name="${esc(t.name)}">Revoke</button>` : ""}</td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty"><strong>No API tokens</strong>Create one for each script, pipeline or assistant, so you can revoke them one at a time.</div>`;
+      $("#tokens").querySelectorAll<HTMLButtonElement>("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
+        if (!(await confirmAction({ title: `Revoke ${b.dataset.name}?`, text: "Anything using this token stops working at once. This can’t be undone; create a new token instead.", ok: "Revoke" }))) return;
+        if (await act(b, () => api(`/api/tokens/${b.dataset.revoke}`, { method: "DELETE" }), `Revoked ${b.dataset.name}`)) load();
+      }));
+      gateOperatorControls($("#tokens"));
+    } catch (e: any) {
+      if (e.status === 403) $("#tokens").innerHTML = `<div class="empty"><strong>Operators only</strong>Ask an operator to create a token for you.</div>`;
+      else errorPanel($("#tokens"), e, load);
+    }
+  }
+
+  $<HTMLFormElement>("#token-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target as HTMLFormElement);
+    const body = { name: String(f.get("name")).trim(), role: String(f.get("role")), expiresInDays: f.get("expires") ? Number(f.get("expires")) : null };
+    let created: any = null;
+    const ok = await act(document.querySelector('button[form="token-form"]'), async () => { created = await api("/api/tokens", { method: "POST", json: body }); }, `Created ${body.name}`);
+    if (!ok || !created) return;
+    (document.getElementById("new-token") as HTMLDialogElement).close(); (ev.target as HTMLFormElement).reset();
+    $("#new-secret").innerHTML = `<div class="notice warn secret-box"><strong>Copy the token for ${esc(created.name)} now.</strong> FleetIQ keeps only its hash and can’t show it again.
+      <pre class="log copyable" id="secret" tabindex="0">${esc(created.token)}</pre>
+      <div class="secret-actions"><button class="btn sm primary" type="button" id="copy-secret">Copy token</button><button class="btn sm" type="button" id="copy-mcp">Copy Claude connector URL</button><button class="btn sm" type="button" id="hide-secret">Done</button></div></div>`;
+    const copy = async (text: string, label: string) => { try { await navigator.clipboard.writeText(text); toast(label); } catch { toast("Select the text and copy it", "bad"); } };
+    $("#copy-secret").addEventListener("click", () => copy(created.token, "Token copied"));
+    $("#copy-mcp").addEventListener("click", () => copy(`${origin}/mcp/t/${created.token}`, "Connector URL copied"));
+    $("#hide-secret").addEventListener("click", () => { $("#new-secret").innerHTML = ""; });
+    load();
+  });
+
+  me().then((m) => { if (m.via === "token") document.querySelector<HTMLButtonElement>('[data-drawer-open="new-token"]')?.setAttribute("hidden", ""); }).catch(() => {});
+  connect(); load();
+</script>
