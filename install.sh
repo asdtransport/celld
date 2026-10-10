@@ -20,6 +20,8 @@ set -euo pipefail
 DOMAIN="" ; PUBLIC_IP="" ; EMAIL=""
 S3_ENDPOINT_EXT="" ; S3_BUCKET="fleet" ; S3_KEY="" ; S3_SECRET="" ; REGION="us-east-1"
 PREFIX="${PREFIX:-/opt/celld-stack}"
+UPDATE_REPO="${UPDATE_REPO:-}" ; UPDATE_REF="${UPDATE_REF:-}" ; FLEETIQ_EXTRA_ENV="${FLEETIQ_EXTRA_ENV:-}"
+LB_IMAGE="${LB_IMAGE:-}" ; SEAWEEDFS_IMAGE="${SEAWEEDFS_IMAGE:-}" ; AWSCLI_IMAGE="${AWSCLI_IMAGE:-}" ; NODE_IMAGE="${NODE_IMAGE:-}"
 # Options from the last run (written below), so a re-run or an update from the console keeps the
 # same domain, ports and bucket. Flags on this run still win.
 # shellcheck disable=SC1091
@@ -96,7 +98,7 @@ mkdir -p "$PREFIX"
 {
   echo "# Options of the last install.sh run (no secrets). Edit, then re-run install.sh or update from the console."
   for v in DOMAIN EMAIL S3_ENDPOINT_EXT S3_BUCKET REGION TLS_MODE HTTP_PORT HTTPS_PORT BUILD_FLAGS FLEETIQ_EXTRA_ENV UPDATE_REPO UPDATE_REF LB_IMAGE SEAWEEDFS_IMAGE AWSCLI_IMAGE NODE_IMAGE; do
-    printf '%s=%q\n' "$v" "${!v:-}"
+    eval "val=\${$v-}"; printf '%s=%q\n' "$v" "$val"
   done
   if [ -n "${PUBLIC_IP_SET:-}" ]; then printf 'PUBLIC_IP=%q\nPUBLIC_IP_SET=1\n' "$PUBLIC_IP"; fi
 } > "$PREFIX/install.env"
@@ -147,7 +149,7 @@ CELLIQ_PORT=127.0.0.1:8080
 EDGE_URL=https://$APP_HOST$( [ "$HTTPS_PORT" != 443 ] && echo ":$HTTPS_PORT" )
 CONSOLE_URL=https://$CONSOLE_HOST$( [ "$HTTPS_PORT" != 443 ] && echo ":$HTTPS_PORT" )
 GITHUB_TOKEN=${FLEETIQ_GITHUB_TOKEN:-}
-# Updates from the console: FleetIQ runs this installer again from $UPDATE_REPO@$UPDATE_REF.
+# Updates from the console: FleetIQ runs this installer again from ${UPDATE_REPO:-asdtransport/celld}@${UPDATE_REF:-celld-stack}.
 STACK_VERSION=${STACK_VERSION:-manual-$(date -u +%Y%m%d%H%M)}
 STACK_PREFIX=$PREFIX
 UPDATE_REPO=${UPDATE_REPO:-asdtransport/celld}
@@ -188,7 +190,7 @@ for img in "${NODE_IMAGE:-ghcr.io/denoland/celld:0.6.2}"; do docker image inspec
 SITE="docker compose -f celliq/deploy/celld/compose.yml ${COMPOSE_EXTRA:+-f $COMPOSE_EXTRA} --env-file celliq/deploy/celld/.env"
 EDGE="docker compose -f celliq/deploy/oss/compose.edge.yml --env-file celliq/deploy/oss/.env.edge"
 export CELLIQ_IMAGE=celliq-celld:latest FLEETIQ_IMAGE=fleetiq:latest EDGE_CADDY_IMAGE=celliq-edge-caddy:latest
-for v in LB_IMAGE SEAWEEDFS_IMAGE AWSCLI_IMAGE; do if [ -n "${!v:-}" ]; then export "${v?}"; fi; done
+for v in LB_IMAGE SEAWEEDFS_IMAGE AWSCLI_IMAGE; do eval "val=\${$v-}"; if [ -n "$val" ]; then export "${v?}"; fi; done
 # Compose interpolates ${VARS} from the shell before --env-file, so a shell with its own AWS_* would
 # leak into the bucket's identity config. Pin them to the stack's values for every compose call.
 unset AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE

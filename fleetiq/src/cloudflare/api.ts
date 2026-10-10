@@ -82,17 +82,32 @@ export class Cloudflare {
     return { id: r.id, created: true };
   }
   async ensureR2(name: string): Promise<{ name: string; created: boolean }> {
-    const res = await this.must<any>("GET", this.acct("/r2/buckets"), undefined, "list R2");
-    if ((res?.buckets ?? []).some((b: any) => b.name === name)) return { name, created: false };
-    await this.must("POST", this.acct("/r2/buckets"), { name }, `create R2 bucket ${name}`);
-    return { name, created: true };
+    // R2 lists 20 buckets a page; filter by name and follow the cursor.
+    let cursor = "";
+    for (let i = 0; i < 100; i++) {
+      const r = await this.call<any>("GET", this.acct(`/r2/buckets?name_contains=${encodeURIComponent(name)}&per_page=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`));
+      if (!r.ok) throw new CloudflareError(`list R2: ${r.errors.map((e) => e.message).join("; ")}`);
+      if ((r.result?.buckets ?? []).some((b: any) => b.name === name)) return { name, created: false };
+      cursor = (r as any).result_info?.cursor ?? "";
+      if (!cursor) break;
+    }
+    const c = await this.call("POST", this.acct("/r2/buckets"), { name });
+    if (c.ok) return { name, created: true };
+    if (c.errors.some((e) => e.code === 10004 || /already exists, and you own it/i.test(e.message))) return { name, created: false };
+    throw new CloudflareError(`create R2 bucket ${name}: ${c.errors.map((e) => `${e.message}${e.code ? ` (${e.code})` : ""}`).join("; ")}`);
   }
   async ensureQueue(name: string): Promise<{ id: string; created: boolean }> {
-    const list = await this.must<any[]>("GET", this.acct("/queues"), undefined, "list Queues (needs Workers Paid)");
-    const f = (list ?? []).find((q) => q.queue_name === name);
-    if (f) return { id: f.queue_id, created: false };
-    const r = await this.must<any>("POST", this.acct("/queues"), { queue_name: name }, `create queue ${name}`);
-    return { id: r.queue_id, created: true };
+    for (let page = 1; page < 50; page++) {
+      const r = await this.call<any[]>("GET", this.acct(`/queues?per_page=100&page=${page}`));
+      if (!r.ok) throw new CloudflareError(`list Queues (needs Workers Paid): ${r.errors.map((e) => e.message).join("; ")}`);
+      const f = (r.result ?? []).find((q) => q.queue_name === name);
+      if (f) return { id: f.queue_id, created: false };
+      if ((r.result ?? []).length < 100) break;
+    }
+    const c = await this.call<any>("POST", this.acct("/queues"), { queue_name: name });
+    if (c.ok) return { id: c.result.queue_id, created: true };
+    if (c.errors.some((e) => /already (exists|taken)/i.test(e.message))) return { id: "", created: false };
+    throw new CloudflareError(`create queue ${name}: ${c.errors.map((e) => e.message).join("; ")}`);
   }
 
   // ---- Access ----
@@ -101,8 +116,13 @@ export class Cloudflare {
     return r.ok ? r.result?.auth_domain ?? null : null;
   }
   private async ensureAccessApp(domain: string, name: string, session: string) {
-    const apps = await this.must<any[]>("GET", this.acct("/access/apps"), undefined, "list Access apps");
-    const f = (apps ?? []).find((a) => a.domain === domain);
+    let f: any = null;
+    for (let page = 1; page < 50 && !f; page++) {
+      const r = await this.call<any[]>("GET", this.acct(`/access/apps?per_page=100&page=${page}`));
+      if (!r.ok) throw new CloudflareError(`list Access apps: ${r.errors.map((e) => e.message).join("; ")}`);
+      f = (r.result ?? []).find((a) => a.domain === domain) ?? null;
+      if ((r.result ?? []).length < 100) break;
+    }
     if (f) return { app: f, created: false };
     const app = await this.must<any>("POST", this.acct("/access/apps"), { name, domain, type: "self_hosted", session_duration: session, app_launcher_visible: true, auto_redirect_to_identity: false }, `create Access app for ${domain}`);
     return { app, created: true };
