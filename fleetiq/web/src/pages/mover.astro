@@ -1,0 +1,305 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Data mover" active="mover">
+  <header class="page-head">
+    <div>
+      <h1>Data mover</h1>
+      <p>Copy data between this server and any cloud: Cloudflare R2, AWS, Railway, Azure and other S3-compatible stores. Each copy only moves what changed, can mirror deletions, verifies the result, and can run on a schedule.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" data-drawer-open="endpoint" data-operator>Add endpoint</button>
+      <button class="btn" type="button" data-drawer-open="sync" data-operator>Copy once</button>
+      <button class="btn primary" type="button" data-drawer-open="job" data-operator>New job</button>
+    </div>
+  </header>
+
+  <div class="grid-2">
+    <section class="panel">
+      <div class="panel-head"><h2>Applications</h2><span class="hint">Back up or restore an app’s whole celld state</span></div>
+      <div class="table-wrap" id="apps"><div class="empty skeleton">Loading</div></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Endpoints</h2><span class="hint">Where data can come from or go to</span></div>
+      <div class="table-wrap" id="endpoints"><div class="empty skeleton">Loading</div></div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Jobs</h2><span class="hint">Saved copies and backups</span></div>
+    <div class="table-wrap" id="jobs"><div class="empty skeleton">Loading</div></div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Recent runs</h2><span class="hint" id="runs-hint"></span></div>
+    <div class="table-wrap" id="runs"><div class="empty skeleton">Loading</div></div>
+  </section>
+
+  <Drawer id="endpoint" title="Add endpoint" submit="Save endpoint" formId="endpoint-form">
+    <form id="endpoint-form">
+      <label class="field"><span>Name</span><input type="text" name="name" required maxlength="80" placeholder="client-r2" autocomplete="off" /></label>
+      <label class="field"><span>Provider</span><select name="provider" id="ep-provider"></select><small id="ep-note"></small></label>
+      <div id="ep-fields"></div>
+      <label class="field"><span>Root folder</span><input type="text" name="prefix" spellcheck="false" placeholder="(bucket root)" /><small>Everything this endpoint reads or writes stays under this folder.</small></label>
+      <div id="ep-test"></div>
+    </form>
+  </Drawer>
+
+  <Drawer id="sync" title="Copy once" submit="Start" formId="sync-form">
+    <form id="sync-form">
+      <fieldset class="sides"></fieldset>
+      <label class="check"><input type="checkbox" name="dryRun" checked /><span>Dry run<small>Show what would be copied and deleted without changing anything.</small></span></label>
+    </form>
+  </Drawer>
+
+  <Drawer id="job" title="New job" submit="Save job" formId="job-form">
+    <form id="job-form">
+      <label class="field"><span>Name</span><input type="text" name="name" required maxlength="80" placeholder="Nightly R2 → Azure" autocomplete="off" /></label>
+      <fieldset class="sides"></fieldset>
+      <label class="field"><span>Schedule</span><select name="every"><option value="">Manual only</option><option value="15">Every 15 minutes</option><option value="60">Hourly</option><option value="360">Every 6 hours</option><option value="1440">Daily</option></select></label>
+    </form>
+  </Drawer>
+
+  <Drawer id="backup" title="Back up application" submit="Back up" formId="backup-form">
+    <form id="backup-form">
+      <p style="margin:0 0 14px;color:var(--ink-2)">Copies everything the app keeps in the fleet bucket: Durable Objects, D1, KV, queues and deployed versions. Later runs copy only what changed, and nothing is ever deleted from the backup.</p>
+      <input type="hidden" name="app" />
+      <label class="field"><span>To endpoint</span><select name="endpoint" class="ep-select" required></select></label>
+      <label class="field"><span>Folder</span><input type="text" name="prefix" spellcheck="false" /><small>Default <code>celld/&lt;app&gt;</code>.</small></label>
+      <label class="check"><input type="checkbox" name="consistent" /><span>Consistent copy<small>Stops the app’s nodes during the copy (the app is offline meanwhile). Leave off for a live copy without downtime.</small></span></label>
+      <label class="field"><span>Repeat</span><select name="every"><option value="">Just now</option><option value="60">Hourly</option><option value="360">Every 6 hours</option><option value="1440">Daily</option></select></label>
+    </form>
+  </Drawer>
+
+  <Drawer id="restore" title="Restore application" submit="Restore" formId="restore-form">
+    <form id="restore-form">
+      <div class="notice warn" style="margin-bottom:14px">Restoring stops the app’s nodes and replaces its data on this server with an exact copy of the backup. Keep the original app name: its code expects it.</div>
+      <label class="field"><span>From endpoint</span><select name="endpoint" class="ep-select" required></select></label>
+      <label class="field"><span>Backup folder</span><input type="text" name="prefix" required spellcheck="false" placeholder="celld/notes" /></label>
+      <label class="field"><span>Application</span><input type="text" name="app" required pattern="[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" spellcheck="false" /><small>Created if it doesn’t exist here.</small></label>
+      <label class="field"><span>Nodes</span><input type="number" name="nodes" min="1" max="9" value="2" /></label>
+      <label class="check"><input type="checkbox" name="dryRun" /><span>Dry run first<small>Show what would change without stopping anything.</small></span></label>
+    </form>
+  </Drawer>
+
+  <Drawer id="run" title="Run">
+    <div id="run-body"></div>
+  </Drawer>
+  <Drawer id="browse" title="Browse">
+    <div id="browse-body"></div>
+  </Drawer>
+</Console>
+
+<script>
+  import { $, act, ago, api, bytes, confirmAction, errorPanel, esc, gateOperatorControls, statusClass, toast, when } from "../lib/api";
+  let providers: any[] = []; let endpoints: any[] = []; let apps: any[] = [];
+  const epName = (id: string) => (id === "fleet" ? "Fleet bucket" : endpoints.find((e) => e.id === id)?.name ?? id);
+  const where = (e: any) => { const c = e.config; return c.bucket ? `${c.bucket}` : c.folder ? `/data/mover/${c.folder}` : c.sasUrl ? "container (SAS)" : ""; };
+  const runStatus = (r: any) => {
+    const s = r.status; const cls = s === "succeeded" || s === "planned" ? "ok" : s === "running" || s === "planning" ? "warn" : s === "cancelled" ? "off" : "bad";
+    const word = { succeeded: "Done", planned: "Planned", running: "Copying", planning: "Listing", failed: "Failed", cancelled: "Cancelled" }[s as string] ?? s;
+    return `<span class="status ${cls}">${word}</span>`;
+  };
+  const summary = (r: any) => {
+    const st = r.stats ?? {}; const p = st.plan; const res = st.result; const pr = st.progress;
+    if (r.status === "running" && pr) return `${pr.done} of ${pr.total} · ${bytes(pr.bytes)} of ${bytes(pr.totalBytes)}<div class="bar"><i style="width:${pr.totalBytes ? Math.round((pr.bytes / pr.totalBytes) * 100) : pr.total ? Math.round((pr.done / pr.total) * 100) : 100}%"></i></div>`;
+    if (res) return `${res.copied} copied (${bytes(res.bytes)})${res.removed ? `, ${res.removed} deleted` : ""}${res.failed ? `, <span style="color:var(--bad)">${res.failed} failed</span>` : ""}${res.verified ? `, ${res.verified.ok ? "verified" : "<span style='color:var(--bad)'>verify failed</span>"}` : ""}`;
+    if (p) return `${p.copy} to copy (${bytes(p.bytes)}), ${p.remove} to delete, ${p.same} in sync`;
+    return "";
+  };
+
+  function sidesHtml() {
+    const opts = `<option value="fleet">Fleet bucket (this server)</option>${endpoints.map((e) => `<option value="${esc(e.id)}">${esc(e.name)} · ${esc(e.providerLabel)}</option>`).join("")}`;
+    return `<div class="side-grid">
+      <label class="field"><span>From</span><select name="srcEndpoint">${opts}</select></label>
+      <label class="field"><span>Folder</span><input type="text" name="srcPrefix" spellcheck="false" placeholder="(root)" /></label>
+      <label class="field"><span>To</span><select name="dstEndpoint">${opts}</select></label>
+      <label class="field"><span>Folder</span><input type="text" name="dstPrefix" spellcheck="false" placeholder="(root)" /></label></div>
+      <label class="field"><span>Mode</span><select name="mode"><option value="copy">Copy: add and update, never delete</option><option value="mirror">Mirror: also delete what the source doesn’t have</option></select></label>
+      <label class="field"><span>Compare by</span><select name="compare"><option value="quick">Size and time (fast, like rsync)</option><option value="checksum">Checksum where both sides have one</option><option value="size">Size only</option></select></label>
+      <label class="field"><span>Skip</span><input type="text" name="exclude" spellcheck="false" placeholder="**/*.tmp, cache/**" /><small>Comma-separated patterns. <code>*</code> stays within a folder, <code>**</code> crosses folders.</small></label>`;
+  }
+  const sidesBody = (f: FormData) => ({
+    source: { endpoint: String(f.get("srcEndpoint")), prefix: String(f.get("srcPrefix") || "").trim() },
+    destination: { endpoint: String(f.get("dstEndpoint")), prefix: String(f.get("dstPrefix") || "").trim() },
+    mode: String(f.get("mode")), compare: String(f.get("compare")),
+    exclude: String(f.get("exclude") || "").split(",").map((s) => s.trim()).filter(Boolean),
+  });
+
+  async function load() {
+    try {
+      [endpoints, apps] = await Promise.all([api<any[]>("/api/mover/endpoints"), api<any[]>("/api/apps")]);
+      document.querySelectorAll<HTMLElement>("fieldset.sides").forEach((fs) => { if (!fs.closest("dialog[open]")) fs.innerHTML = sidesHtml(); });
+      document.querySelectorAll<HTMLSelectElement>("select.ep-select").forEach((s) => { if (!s.closest("dialog[open]")) s.innerHTML = endpoints.map((e) => `<option value="${esc(e.id)}">${esc(e.name)} · ${esc(e.providerLabel)}</option>`).join(""); });
+      $("#endpoints").innerHTML = `<table class="data"><thead><tr><th>Endpoint</th><th>Where</th><th></th></tr></thead><tbody>
+        <tr><td class="main-cell"><strong>Fleet bucket</strong><span class="sub">built in · this server</span></td><td><span class="sub">Each app under its name</span></td><td class="row-actions"><button class="btn sm" type="button" data-browse="fleet">Browse</button></td></tr>
+        ${endpoints.map((e) => `<tr><td class="main-cell"><strong>${esc(e.name)}</strong><span class="sub">${esc(e.providerLabel)}</span></td>
+          <td><code>${esc(where(e))}${e.prefix ? `/${esc(e.prefix)}` : ""}</code></td>
+          <td class="row-actions"><button class="btn sm" type="button" data-test="${esc(e.id)}">Test</button><button class="btn sm" type="button" data-browse="${esc(e.id)}">Browse</button><button class="btn sm danger" type="button" data-operator data-del-ep="${esc(e.id)}" data-name="${esc(e.name)}">Remove</button></td></tr>`).join("")}</tbody></table>
+        ${endpoints.length ? "" : `<div class="empty">Add the client’s cloud storage, or a folder on this server, to copy to or from.</div>`}`;
+      $("#apps").innerHTML = apps.length ? `<table class="data"><thead><tr><th>Application</th><th>Live nodes</th><th></th></tr></thead><tbody>${
+        apps.map((a) => `<tr><td class="main-cell"><a href="/app?name=${encodeURIComponent(a.name)}">${esc(a.name)}</a><span class="sub">${a.managed ? "nodes run by FleetIQ" : "nodes run outside FleetIQ (live copy only)"}</span></td>
+          <td>${a.liveNodes}</td>
+          <td class="row-actions"><button class="btn sm" type="button" data-operator data-backup="${esc(a.name)}" data-managed="${a.managed ? 1 : 0}">Back up</button><button class="btn sm" type="button" data-operator data-restore="${esc(a.name)}">Restore</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No applications yet.</div>`;
+      wire();
+      loadJobs(); loadRuns();
+    } catch (e) { errorPanel($("#endpoints"), e, load); }
+  }
+
+  async function loadJobs() {
+    try {
+      const jobs = await api<any[]>("/api/mover/jobs");
+      $("#jobs").innerHTML = jobs.length ? `<table class="data"><thead><tr><th>Job</th><th>From → to</th><th>Schedule</th><th>Last run</th><th></th></tr></thead><tbody>${
+        jobs.map((j) => `<tr${j.enabled ? "" : ` class="muted"`}><td class="main-cell"><strong>${esc(j.name)}</strong><span class="sub">${j.kind === "app-backup" ? `backup of ${esc(j.app)}${j.consistent ? ", consistent" : ", live"}` : esc(j.mode)}</span></td>
+          <td><code>${esc(epName(j.srcEndpoint))}:/${esc(j.srcPrefix)}</code><br><code>→ ${esc(epName(j.dstEndpoint))}:/${esc(j.dstPrefix)}</code></td>
+          <td>${j.everyMinutes ? `Every ${j.everyMinutes >= 60 ? `${j.everyMinutes / 60} h` : `${j.everyMinutes} min`}${j.enabled ? `<span class="sub">next ${j.nextRunAt ? esc(when(j.nextRunAt)) : "soon"}</span>` : `<span class="sub">paused</span>`}` : "Manual"}</td>
+          <td>${j.lastRun ? `${runStatus(j.lastRun)} <span class="sub">${ago(j.lastRun.startedAt)} · ${summary(j.lastRun)}</span>` : `<span class="sub">Never</span>`}</td>
+          <td class="row-actions"><button class="btn sm" type="button" data-operator data-plan="${esc(j.id)}">Dry run</button><button class="btn sm primary" type="button" data-operator data-run="${esc(j.id)}" data-name="${esc(j.name)}" data-consistent="${j.consistent ? 1 : 0}">Run</button>
+            ${j.everyMinutes ? `<button class="btn sm" type="button" data-operator data-toggle="${esc(j.id)}" data-enabled="${j.enabled ? 1 : 0}">${j.enabled ? "Pause" : "Resume"}</button>` : ""}
+            <button class="btn sm danger" type="button" data-operator data-del-job="${esc(j.id)}" data-name="${esc(j.name)}">Remove</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty"><strong>No jobs yet</strong>Save a copy you’ll repeat, or put a backup on a schedule.</div>`;
+      $("#jobs").querySelectorAll<HTMLButtonElement>("[data-run],[data-plan]").forEach((b) => b.addEventListener("click", async () => {
+        const dry = !!b.dataset.plan; const jid = b.dataset.plan ?? b.dataset.run!;
+        if (!dry && b.dataset.consistent === "1" && !(await confirmAction({ title: `Run ${b.dataset.name}?`, text: "This is a consistent backup: the app's nodes stop during the copy and start again afterwards.", ok: "Run backup" }))) return;
+        let r: any; if (await act(b, async () => { r = await api(`/api/mover/jobs/${jid}/run${dry ? "?dryRun=1" : ""}`, { method: "POST" }); }, dry ? "Planning" : "Started")) showRun(r.id);
+      }));
+      $("#jobs").querySelectorAll<HTMLButtonElement>("[data-toggle]").forEach((b) => b.addEventListener("click", async () => {
+        if (await act(b, () => api(`/api/mover/jobs/${b.dataset.toggle}`, { method: "PATCH", json: { enabled: b.dataset.enabled !== "1" } }), b.dataset.enabled === "1" ? "Paused" : "Resumed")) loadJobs();
+      }));
+      $("#jobs").querySelectorAll<HTMLButtonElement>("[data-del-job]").forEach((b) => b.addEventListener("click", async () => {
+        if (!(await confirmAction({ title: `Remove ${b.dataset.name}?`, text: "The job and its schedule go away. Data already copied stays where it is.", ok: "Remove" }))) return;
+        if (await act(b, () => api(`/api/mover/jobs/${b.dataset.delJob}`, { method: "DELETE" }), "Job removed")) loadJobs();
+      }));
+      gateOperatorControls($("#jobs"));
+    } catch (e) { errorPanel($("#jobs"), e, loadJobs); }
+  }
+
+  async function loadRuns() {
+    try {
+      const runs = await api<any[]>("/api/mover/runs?limit=15");
+      const live = runs.filter((r) => r.status === "running" || r.status === "planning").length;
+      $("#runs-hint").textContent = live ? `${live} running` : "";
+      $("#runs").innerHTML = runs.length ? `<table class="data"><thead><tr><th>Run</th><th>Result</th><th>When</th><th></th></tr></thead><tbody>${
+        runs.map((r) => `<tr><td class="main-cell"><strong>${esc(r.label)}</strong><span class="sub">${r.dryRun ? "dry run · " : ""}by ${esc(r.actor)}</span></td>
+          <td>${runStatus(r)}<span class="sub">${summary(r)}</span></td><td style="white-space:nowrap">${ago(r.startedAt)}</td>
+          <td class="row-actions"><button class="btn sm" type="button" data-show="${esc(r.id)}">Log</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">Nothing has been copied yet.</div>`;
+      $("#runs").querySelectorAll<HTMLButtonElement>("[data-show]").forEach((b) => b.addEventListener("click", () => showRun(b.dataset.show!)));
+      if (live) setTimeout(() => { if (!document.hidden) { loadRuns(); loadJobs(); } }, 2500);
+    } catch (e) { errorPanel($("#runs"), e, loadRuns); }
+  }
+
+  async function showRun(id: string) {
+    const dlg = document.getElementById("run") as HTMLDialogElement; if (!dlg.open) dlg.showModal();
+    for (;;) {
+      const r = await api<any>(`/api/mover/runs/${id}`);
+      const st = r.stats ?? {}; const sample = st.sample;
+      $("#run-body").innerHTML = `<p style="margin:0 0 6px"><strong>${esc(r.label)}</strong></p><p style="margin:0 0 12px">${runStatus(r)} <span class="sub">${summary(r)}</span></p>
+        ${r.status === "running" ? `<button class="btn sm danger" type="button" id="cancel-run">Cancel</button>` : ""}
+        <pre class="log" style="max-height:45vh;margin-top:10px">${esc(r.log || "Starting…")}</pre>
+        ${sample ? `<h3 style="font-size:13px;margin:14px 0 6px">Would copy (first ${sample.copy.length})</h3><pre class="log" style="max-height:25vh">${esc(sample.copy.map((i: any) => `${i.reason === "new" ? "+" : "~"} ${i.rel}  ${bytes(i.size)}`).join("\n") || "nothing")}</pre>
+          ${sample.remove.length ? `<h3 style="font-size:13px;margin:14px 0 6px">Would delete</h3><pre class="log">${esc(sample.remove.map((k: string) => `- ${k}`).join("\n"))}</pre>` : ""}` : ""}
+        ${st.result?.errors?.length ? `<h3 style="font-size:13px;margin:14px 0 6px">Errors</h3><pre class="log">${esc(st.result.errors.map((e: any) => `${e.key}: ${e.error}`).join("\n"))}</pre>` : ""}`;
+      document.getElementById("cancel-run")?.addEventListener("click", () => api(`/api/mover/runs/${id}/cancel`, { method: "POST" }).then(() => toast("Cancelling")));
+      if (!["running", "planning"].includes(r.status) || !dlg.open) { loadRuns(); loadJobs(); return; }
+      await new Promise((res) => setTimeout(res, 1500));
+    }
+  }
+
+  function wire() {
+    $("#endpoints").querySelectorAll<HTMLButtonElement>("[data-test]").forEach((b) => b.addEventListener("click", async () => {
+      let r: any; if (!(await act(b, async () => { r = await api(`/api/mover/endpoints/${b.dataset.test}/test`, { method: "POST", json: {} }); }, "Tested"))) return;
+      toast(r.list && r.write ? `${r.endpoint}: can list and write` : `${r.endpoint}: ${r.detail}`, r.list && r.write ? "ok" : "bad");
+    }));
+    $("#endpoints").querySelectorAll<HTMLButtonElement>("[data-browse]").forEach((b) => b.addEventListener("click", () => browse(b.dataset.browse!, "")));
+    $("#endpoints").querySelectorAll<HTMLButtonElement>("[data-del-ep]").forEach((b) => b.addEventListener("click", async () => {
+      if (!(await confirmAction({ title: `Remove ${b.dataset.name}?`, text: "Only the saved connection is removed; nothing in the storage is touched.", ok: "Remove" }))) return;
+      if (await act(b, () => api(`/api/mover/endpoints/${b.dataset.delEp}`, { method: "DELETE" }), "Endpoint removed")) load();
+    }));
+    $("#apps").querySelectorAll<HTMLButtonElement>("[data-backup]").forEach((b) => b.addEventListener("click", () => {
+      if (!endpoints.length) { toast("Add an endpoint to back up to first", "bad"); return; }
+      const f = $<HTMLFormElement>("#backup-form"); f.reset();
+      (f.elements.namedItem("app") as HTMLInputElement).value = b.dataset.backup!;
+      (f.elements.namedItem("prefix") as HTMLInputElement).placeholder = `celld/${b.dataset.backup}`;
+      const cons = f.elements.namedItem("consistent") as HTMLInputElement; cons.disabled = b.dataset.managed !== "1";
+      document.getElementById("backup-title")!.textContent = `Back up ${b.dataset.backup}`;
+      (document.getElementById("backup") as HTMLDialogElement).showModal();
+    }));
+    $("#apps").querySelectorAll<HTMLButtonElement>("[data-restore]").forEach((b) => b.addEventListener("click", () => {
+      if (!endpoints.length) { toast("Add the endpoint that holds the backup first", "bad"); return; }
+      const f = $<HTMLFormElement>("#restore-form"); f.reset();
+      (f.elements.namedItem("app") as HTMLInputElement).value = b.dataset.restore!;
+      (f.elements.namedItem("prefix") as HTMLInputElement).value = `celld/${b.dataset.restore}`;
+      (document.getElementById("restore") as HTMLDialogElement).showModal();
+    }));
+    gateOperatorControls($("#endpoints")); gateOperatorControls($("#apps"));
+  }
+
+  async function browse(id: string, prefix: string) {
+    const dlg = document.getElementById("browse") as HTMLDialogElement; if (!dlg.open) dlg.showModal();
+    document.getElementById("browse-title")!.textContent = `Browse ${epName(id)}`;
+    $("#browse-body").innerHTML = `<div class="skeleton">Listing</div>`;
+    try {
+      const r = await api<any>(`/api/mover/endpoints/${encodeURIComponent(id)}/browse?prefix=${encodeURIComponent(prefix)}&limit=300`);
+      // Show one folder level at a time.
+      const level = new Map<string, { n: number; b: number }>(); const files: any[] = [];
+      for (const it of r.items) { const i = it.key.indexOf("/"); if (i >= 0) { const d = it.key.slice(0, i + 1); const v = level.get(d) ?? { n: 0, b: 0 }; v.n++; v.b += it.size; level.set(d, v); } else files.push(it); }
+      $("#browse-body").innerHTML = `<form id="browse-form" style="display:flex;gap:8px;margin-bottom:12px"><input type="text" name="p" value="${esc(prefix)}" spellcheck="false" style="flex:1" placeholder="folder/" /><button class="btn sm" type="submit">Go</button></form>
+        <p class="sub" style="margin:0 0 10px">${r.count.toLocaleString()} objects, ${bytes(r.bytes)} under <code>${esc(r.endpoint)}</code>${r.truncated ? " (showing the first 300)" : ""}</p>
+        <table class="data"><tbody>${prefix ? `<tr><td><a href="#" data-p="${esc(prefix.replace(/[^/]+\/?$/, ""))}">..</a></td><td></td></tr>` : ""}${
+          [...level].map(([d, v]) => `<tr><td><a href="#" data-p="${esc(prefix + d)}">${esc(d)}</a></td><td class="num">${v.n}+ · ${bytes(v.b)}</td></tr>`).join("")}${
+          files.map((f) => `<tr><td><code>${esc(f.key)}</code></td><td class="num">${bytes(f.size)}</td></tr>`).join("")}</tbody></table>`;
+      $("#browse-body").querySelectorAll<HTMLAnchorElement>("[data-p]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); browse(id, a.dataset.p!); }));
+      $<HTMLFormElement>("#browse-form").addEventListener("submit", (e) => { e.preventDefault(); browse(id, String(new FormData(e.target as HTMLFormElement).get("p") || "")); });
+    } catch (e) { errorPanel($("#browse-body"), e); }
+  }
+
+  // ---- endpoint form: fields follow the provider ----
+  const provSel = $<HTMLSelectElement>("#ep-provider");
+  function renderFields() {
+    const p = providers.find((x) => x.id === provSel.value); if (!p) return;
+    $("#ep-note").textContent = p.note ?? "";
+    $("#ep-fields").innerHTML = p.fields.map((f: any) => `<label class="field"><span>${esc(f.label)}</span><input type="${f.secret ? "password" : "text"}" name="cfg.${esc(f.key)}" ${f.required ? "required" : ""} spellcheck="false" autocomplete="off" placeholder="${esc(f.placeholder ?? f.default ?? "")}" />${f.help ? `<small>${esc(f.help)}</small>` : ""}</label>`).join("");
+  }
+  provSel.addEventListener("change", renderFields);
+  $<HTMLFormElement>("#endpoint-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target as HTMLFormElement);
+    const cfg: Record<string, string> = {}; for (const [k, v] of f) if (k.startsWith("cfg.") && String(v).trim()) cfg[k.slice(4)] = String(v).trim();
+    const body = { name: String(f.get("name")).trim(), provider: String(f.get("provider")), prefix: String(f.get("prefix") || "").trim(), config: cfg };
+    let ep: any = null;
+    if (!(await act(document.querySelector('button[form="endpoint-form"]'), async () => { ep = await api("/api/mover/endpoints", { method: "POST", json: body }); }, `Saved ${body.name}`)) || !ep) return;
+    const t = await api<any>(`/api/mover/endpoints/${ep.id}/test`, { method: "POST", json: {} }).catch((e) => ({ list: false, write: false, detail: e.message }));
+    toast(t.list && t.write ? `${body.name}: can list and write` : `${body.name} saved, but: ${t.detail}`, t.list && t.write ? "ok" : "bad");
+    (document.getElementById("endpoint") as HTMLDialogElement).close(); (ev.target as HTMLFormElement).reset(); renderFields(); load();
+  });
+
+  $<HTMLFormElement>("#sync-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(ev.target as HTMLFormElement);
+    let r: any; if (!(await act(document.querySelector('button[form="sync-form"]'), async () => { r = await api("/api/mover/sync", { method: "POST", json: { ...sidesBody(f), dryRun: f.get("dryRun") === "on" } }); }, "Started"))) return;
+    (document.getElementById("sync") as HTMLDialogElement).close(); showRun(r.id);
+  });
+  $<HTMLFormElement>("#job-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(ev.target as HTMLFormElement);
+    const body = { ...sidesBody(f), name: String(f.get("name")).trim(), everyMinutes: f.get("every") ? Number(f.get("every")) : null };
+    if (await act(document.querySelector('button[form="job-form"]'), () => api("/api/mover/jobs", { method: "POST", json: body }), `Saved ${body.name}`)) { (document.getElementById("job") as HTMLDialogElement).close(); loadJobs(); }
+  });
+  $<HTMLFormElement>("#backup-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(ev.target as HTMLFormElement); const app = String(f.get("app"));
+    const body = { endpoint: String(f.get("endpoint")), prefix: String(f.get("prefix") || "").trim() || undefined, consistent: f.get("consistent") === "on", everyMinutes: f.get("every") ? Number(f.get("every")) : null };
+    let r: any; if (!(await act(document.querySelector('button[form="backup-form"]'), async () => { r = await api(`/api/apps/${encodeURIComponent(app)}/backup`, { method: "POST", json: body }); }, `Backing up ${app}`))) return;
+    (document.getElementById("backup") as HTMLDialogElement).close(); loadJobs(); if (r.run) showRun(r.run.id);
+  });
+  $<HTMLFormElement>("#restore-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(ev.target as HTMLFormElement);
+    const body = { endpoint: String(f.get("endpoint")), prefix: String(f.get("prefix")).trim(), app: String(f.get("app")).trim(), nodes: Number(f.get("nodes") || 2), dryRun: f.get("dryRun") === "on" };
+    if (!body.dryRun && !(await confirmAction({ title: `Restore ${body.app}?`, text: "Its nodes stop and its data on this server is replaced with the backup.", ok: "Restore", typed: body.app }))) return;
+    let r: any; if (!(await act(document.querySelector('button[form="restore-form"]'), async () => { r = await api("/api/mover/restore", { method: "POST", json: body }); }, body.dryRun ? "Planning" : `Restoring ${body.app}`))) return;
+    (document.getElementById("restore") as HTMLDialogElement).close(); showRun(r.id);
+  });
+
+  api<any>("/api/mover/providers").then((r) => { providers = r.providers; provSel.innerHTML = providers.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join(""); renderFields(); });
+  load();
+</script>

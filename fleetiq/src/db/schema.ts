@@ -78,3 +78,52 @@ export const appSources = sqliteTable("app_sources", {
   updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 export type AppSource = typeof appSources.$inferSelect;
+
+// ---- Data mover ----
+// A place data lives (provider + settings incl. secrets, which the API never returns).
+export const moverEndpoints = sqliteTable("mover_endpoints", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  provider: text("provider").notNull(),
+  config: text("config").notNull(),              // JSON
+  prefix: text("prefix").notNull().default(""),  // default root inside the bucket/container/folder
+  createdBy: text("created_by"),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+export type MoverEndpoint = typeof moverEndpoints.$inferSelect;
+
+// A saved sync (or app backup), optionally on a schedule.
+export const moverJobs = sqliteTable("mover_jobs", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("sync"),  // sync | app-backup
+  app: text("app"),                              // app-backup: the application
+  consistent: integer("consistent").notNull().default(0), // app-backup: stop the app's nodes while copying
+  srcEndpoint: text("src_endpoint").notNull(), srcPrefix: text("src_prefix").notNull().default(""),
+  dstEndpoint: text("dst_endpoint").notNull(), dstPrefix: text("dst_prefix").notNull().default(""),
+  mode: text("mode").notNull().default("copy"),  // copy | mirror
+  compare: text("compare").notNull().default("quick"),
+  include: text("include"), exclude: text("exclude"),     // JSON string arrays
+  concurrency: integer("concurrency").notNull().default(8),
+  verify: integer("verify").notNull().default(1),
+  everyMinutes: integer("every_minutes"),        // null = manual only
+  enabled: integer("enabled").notNull().default(1),
+  nextRunAt: integer("next_run_at"),
+  createdBy: text("created_by"),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+export type MoverJob = typeof moverJobs.$inferSelect;
+
+export const moverRuns = sqliteTable("mover_runs", {
+  id: text("id").primaryKey(),
+  job: text("job"),                              // null for one-off syncs and restores
+  label: text("label").notNull(),
+  status: text("status").notNull(),              // planning | running | succeeded | failed | cancelled | planned
+  dryRun: integer("dry_run").notNull().default(0),
+  stats: text("stats"),                          // JSON progress / result
+  log: text("log"),
+  actor: text("actor"),
+  startedAt: integer("started_at").notNull().default(sql`(unixepoch())`),
+  finishedAt: integer("finished_at"),
+});
+export type MoverRun = typeof moverRuns.$inferSelect;

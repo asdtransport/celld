@@ -275,3 +275,9 @@ tr.muted td { opacity: .55; }
 .kv-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
 .kv-list dt { color: var(--ink-2); }
 .kv-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* Data mover */
+fieldset.sides { border: 0; padding: 0; margin: 0; min-width: 0; }
+.side-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 0 12px; }
+.bar { height: 4px; background: var(--rule-soft); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--teal); transition: width .4s; }

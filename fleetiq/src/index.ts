@@ -8,6 +8,7 @@ import { DDL } from "./db/ddl";
 import { setDb } from "./db/runtime";
 import * as repo from "./lib/repo";
 import { startLbReconciler, syncLb } from "./services/network";
+import { startScheduler } from "./mover/controller";
 
 // Bun entry. The UI is the Astro build in web/dist — no hand-written HTML lives in the server.
 mkdirSync(config.dataDir, { recursive: true });
@@ -64,4 +65,5 @@ Bun.serve({
   },
 });
 if (repo.listRoutes().length && process.env.LB_SYNC !== "0") { syncLb().then((r) => console.log(`lb sync: ${r.pushed ? "pushed" : `not pushed${r.error ? ` (${r.error})` : ""}`}`)); startLbReconciler(); }
+if (process.env.MOVER_SCHEDULE !== "0") startScheduler();
 console.log(`FleetIQ console -> http://localhost:${port}  (auth: ${config.authMode}, bucket: ${config.bucket})`);

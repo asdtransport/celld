@@ -1,5 +1,6 @@
 import * as bucket from "../adapters/bucket";
-import { type ContainerSummary, listContainers } from "../adapters/docker";
+import { type ContainerSummary, createNode, listContainers, nodeContainerName, removeNode } from "../adapters/docker";
+import { config } from "../config";
 import { type NodeState, nodeState } from "../adapters/nodes";
 import type { App } from "../db/schema";
 
@@ -42,4 +43,17 @@ export async function upstreamsOf(app: App, containers?: ContainerSummary[]): Pr
   }
   const leases = await bucket.nodeLeases(app.prefix).catch(() => []);
   return [...new Set(leases.filter((l) => l.expires_ms > Date.now()).map((l) => `${l.addr.split(":")[0]}:8787`))].sort();
+}
+
+// Make a managed app run exactly `nodes` node containers (removed nodes hand their cells off first).
+export async function scaleNodes(app: App, nodes: number) {
+  const mine = (await listContainers()).filter((x) => x.app === app.name && x.role === "node");
+  const have = new Set(mine.map((x) => x.name));
+  const created: string[] = []; const removed: string[] = [];
+  for (let i = 1; i <= nodes; i++) if (!have.has(nodeContainerName(app.name, i))) created.push(await createNode(app.name, app.prefix, i, app.nodeImage || config.nodeImage));
+  for (const x of mine.sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))) {
+    const idx = Number(x.name.split("-node-")[1]);
+    if (idx > nodes) { await removeNode(x.name); removed.push(x.name); }
+  }
+  return { created, removed };
 }

@@ -68,11 +68,13 @@ const ACTIONS: Record<string, string> = {
   "container.restart": "Restarted", "container.start": "Started", "container.stop": "Stopped",
   "token.create": "Created API token", "token.revoke": "Revoked API token", "source.set": "Set Git source of", "source.remove": "Removed Git source of",
   "source.rotate-secret": "Rotated webhook secret of", webhook: "Webhook for",
+  "mover.run": "Copied", "mover.endpoint.create": "Added endpoint", "mover.endpoint.update": "Changed endpoint", "mover.endpoint.remove": "Removed endpoint",
+  "mover.job.create": "Saved job", "mover.job.update": "Changed job", "mover.job.remove": "Removed job",
 };
 const VERBS: Record<string, string> = {
   deploy: "deploy", rollback: "roll back", "app.scale": "scale", "app.create": "create", "route.set": "route", "route.remove": "remove the route", "tunnel.create": "add tunnel",
   "tunnel.remove": "remove tunnel", "kv.put": "write KV key", "kv.delete": "delete KV key", "d1.execute": "run SQL on", "d1.migrate": "migrate", "r2.put": "upload to", "r2.delete": "delete from R2",
-  "queue.purge": "purge", "queue.pause": "pause", "queue.resume": "resume", "container.restart": "restart", "container.start": "start", "container.stop": "stop", webhook: "accept the webhook for",
+  "queue.purge": "purge", "queue.pause": "pause", "queue.resume": "resume", "container.restart": "restart", "container.start": "start", "container.stop": "stop", webhook: "accept the webhook for", "mover.run": "copy",
 };
 // One line for an audit entry: "Deployed board", "Couldn't deploy board", "Refused: POST /api/apps".
 export const auditLine = (e: { action: string; target: string; outcome: string }) =>

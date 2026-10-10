@@ -7,7 +7,7 @@ import { config } from "../config";
 import { AppCreate, AppPatch, Rollback, Scale } from "../contract";
 import * as repo from "../lib/repo";
 import { deployUpload, rollback } from "../services/deploy";
-import { fleetOf } from "../services/fleet";
+import { fleetOf, scaleNodes } from "../services/fleet";
 import { syncLb } from "../services/network";
 import { audited, failure, requireApp } from "./util";
 
@@ -97,17 +97,7 @@ export function appRoutes(api: Hono) {
     if (!app.managed) return c.json({ error: `${app.name}'s nodes run outside FleetIQ; scale them where they are defined` }, 409);
     const { nodes } = Scale.parse(await c.req.json());
     try {
-      const result = await audited(c, "app.scale", app.name, async () => {
-        const mine = (await listContainers()).filter((x) => x.app === app.name && x.role === "node");
-        const have = new Set(mine.map((x) => x.name));
-        const created: string[] = []; const removed: string[] = [];
-        for (let i = 1; i <= nodes; i++) if (!have.has(nodeContainerName(app.name, i))) created.push(await createNode(app.name, app.prefix, i, app.nodeImage || config.nodeImage));
-        for (const x of mine.sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))) {
-          const idx = Number(x.name.split("-node-")[1]);
-          if (idx > nodes) { await removeNode(x.name); removed.push(x.name); }
-        }
-        return { created, removed };
-      }, (r) => `→ ${nodes} nodes (+${r.created.length} −${r.removed.length})`);
+      const result = await audited(c, "app.scale", app.name, () => scaleNodes(app, nodes), (r) => `→ ${nodes} nodes (+${r.created.length} −${r.removed.length})`);
       repo.updateApp(app.name, { desiredNodes: nodes });
       const lb = await syncLb();
       return c.json({ ...result, lb });

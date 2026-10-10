@@ -80,6 +80,25 @@ FleetIQ downloads that commit, builds it in a throwaway container (type check, t
 deploys it. Turn on **Deploy on every push** and add the webhook shown there to the GitHub repo to ship
 on `git push`. Private repos need a read-only GitHub token on the same form.
 
+## Data mover: backups, disaster recovery and client migrations
+
+**Data mover** in the console copies between any two places, like rsync for cloud storage. Built-in
+connectors: Cloudflare R2, Amazon S3, Railway buckets, Azure Blob (container SAS), DigitalOcean
+Spaces, Backblaze B2, Google Cloud Storage (HMAC), Wasabi, any S3-compatible store (MinIO,
+SeaweedFS, Ceph), a folder on this server, and this server's own fleet bucket.
+
+- **Copy** adds and updates; **mirror** also deletes what the source no longer has, but only after
+  every copy succeeded. Later runs move only what changed (size and time, or checksums).
+- **Dry run** shows exactly what would be copied and deleted. Every run verifies what it wrote.
+- **Jobs** save a copy and can repeat it every 15 minutes to daily.
+- **Back up an application**: its whole celld state (Durable Objects, D1, KV, queues, deployed
+  versions) goes to any endpoint. *Consistent* stops the app's nodes during the copy; *live* has no
+  downtime. Backups never delete, so a wiped source can't wipe the backup.
+- **Restore an application** onto this or another server: nodes stop, the app's data becomes an
+  exact copy of the backup, nodes start. Keep the original app name.
+
+All of it is in the API and the Claude connector (`backup_app`, `restore_app`, `mover_sync`, …).
+
 ## API, Claude and automation
 
 Everything in the console is an API. In **API & access**, create a token per script, pipeline or
