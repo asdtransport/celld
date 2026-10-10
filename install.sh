@@ -158,7 +158,7 @@ say "Building images (first run: 3–6 minutes)"
 build() { local tag="$1" ctx="$2"; shift 2; docker buildx build --load $BUILD_FLAGS "$@" -t "$tag" "$ctx" >>"$LOG" 2>&1 || die "build failed: $tag — see $LOG"; ok "$tag"; }
 SHA="$(date +%Y%m%d%H%M)"
 build celliq-celld:latest celliq --build-arg BUILD_SHA="$SHA"
-build fleetiq:latest fleetiq --build-arg BUILD_SHA="$SHA"
+build fleetiq:latest fleetiq --build-arg BUILD_SHA="$SHA" --build-arg RUN_CHECKS="${RUN_CHECKS:-0}"
 build celliq-edge-caddy:latest celliq/deploy/oss/edge -f celliq/deploy/oss/edge/Dockerfile.caddy
 for img in "${NODE_IMAGE:-ghcr.io/denoland/celld:0.6.2}"; do docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >>"$LOG" 2>&1; ok "$img"; done
 

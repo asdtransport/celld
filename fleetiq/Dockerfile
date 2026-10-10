@@ -14,7 +14,9 @@ RUN --mount=type=secret,id=extra_ca,required=false \
     if [ -s /run/secrets/extra_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/extra_ca; fi; \
     bun install --frozen-lockfile && (cd web && bun install --frozen-lockfile)
 COPY . .
-RUN bun run verify && bun test
+# Type check and tests. The server installer skips them (RUN_CHECKS=0); they run in development.
+ARG RUN_CHECKS=1
+RUN if [ "$RUN_CHECKS" = 1 ]; then bun run verify && bun test; fi
 RUN cd web && bun run build && test -f dist/index.html
 RUN --mount=type=secret,id=extra_ca,required=false \
     if [ -s /run/secrets/extra_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/extra_ca; fi; \
