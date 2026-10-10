@@ -146,7 +146,7 @@ import Drawer from "../components/Drawer.astro";
           <dt>Last deploy</dt><dd>${l.lastVersion ? `<code>${esc(l.lastVersion.slice(0, 13))}</code> ${ago(l.lastDeployAt)}` : "Never"}</dd>
         </dl>
         <div class="secret-actions" style="margin-top:12px">
-          <button class="btn sm primary" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="current">Deploy the version running here</button>
+          <button class="btn sm primary" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="current">${l.lastVersion ? "Redeploy" : "Deploy"} the version running here</button>
           ${source ? `<button class="btn sm" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="git">Deploy from Git</button>` : ""}
           <button class="btn sm" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="current" data-dry="1">Dry run</button>
           ${l.url ? `<button class="btn sm" type="button" data-cf-verify="${esc(l.target)}">Verify</button>` : ""}
@@ -213,9 +213,18 @@ import Drawer from "../components/Drawer.astro";
         ${source.webhookSecret ? `<dt>GitHub webhook</dt><dd>Payload URL <code>${esc(source.webhookUrl)}</code>, content type <code>application/json</code>, secret <code class="copyable" id="wh-secret" title="Click to copy">${esc(source.webhookSecret)}</code>, just the push event.</dd>` : ""}
         <dt>Commit checks</dt><dd>${source.hasToken ? "Each build is reported on the commit in GitHub as <code>fleetiq/" + esc(name) + "</code>." : "Add a GitHub token to report each build on its commit and register the webhook for you."}</dd>
       </dl>
-      ${source.hasToken ? `<div class="secret-actions" style="margin-top:12px"><button class="btn sm" type="button" data-operator id="wh-register">Register webhook on GitHub</button></div>` : ""}`;
+      ${source.hasToken ? `<div class="secret-actions" style="margin-top:12px;align-items:center"><span id="wh-state" class="sub">Checking the webhook on GitHub…</span><button class="btn sm" type="button" data-operator id="wh-register" hidden>Register webhook on GitHub</button></div>` : ""}`;
+      if (source.hasToken) api<any>(`/api/apps/${encodeURIComponent(name)}/source/webhook`).then((w) => {
+        const st = document.getElementById("wh-state"); const btn = document.getElementById("wh-register") as HTMLButtonElement | null;
+        if (!st || !btn) return;
+        if (!w.known) { st.innerHTML = `<span class="status warn">Can't check</span> ${esc(w.reason)}`; btn.hidden = false; return; }
+        if (!w.registered) { st.innerHTML = `<span class="status warn">Not on GitHub</span>`; btn.hidden = false; return; }
+        const ok = w.active && w.contentType === "json" && (!w.last || !w.last.code || (w.last.code >= 200 && w.last.code < 300));
+        st.innerHTML = `<span class="status ${ok ? "ok" : "warn"}">Webhook registered</span> ${w.last?.code ? `last delivery ${esc(w.last.code)} ${esc(w.last.message ?? "")}` : "no deliveries yet"}${w.contentType !== "json" ? " · content type isn't JSON" : ""}${w.active ? "" : " · inactive"}`;
+        if (!ok) { btn.hidden = false; btn.textContent = "Fix webhook on GitHub"; }
+      }).catch(() => {});
       document.getElementById("wh-register")?.addEventListener("click", async (ev) => {
-        let r: any; if (await act(ev.currentTarget as HTMLButtonElement, async () => { r = await api(`/api/apps/${encodeURIComponent(name)}/source/webhook`, { method: "POST" }); }, "Webhook registered")) toast(`Webhook ${r.action} on ${source.repo}`);
+        let r: any; if (await act(ev.currentTarget as HTMLButtonElement, async () => { r = await api(`/api/apps/${encodeURIComponent(name)}/source/webhook`, { method: "POST" }); }, "Webhook registered")) { toast(`Webhook ${r.action} on ${source.repo}`); loadSource(); }
       });
       gateOperatorControls(el);
       document.getElementById("wh-secret")?.addEventListener("click", () => navigator.clipboard.writeText(source.webhookSecret).then(() => toast("Secret copied")).catch(() => {}));

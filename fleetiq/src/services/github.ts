@@ -40,6 +40,16 @@ export async function ensureWebhook(src: Pick<AppSource, "repo" | "token">, url:
   return { id: r.data.id, action: "created" };
 }
 
+// Is the webhook on GitHub, and did GitHub's last delivery get through?
+export async function webhookStatus(src: Pick<AppSource, "repo" | "token">, url: string) {
+  if (!isGithubRepo(src.repo) || !tokenOf(src)) return { known: false as const, reason: tokenOf(src) ? "not a GitHub repo" : "no GitHub token on the source" };
+  const list = await gh<any[]>(src, "GET", "/hooks?per_page=100").catch(() => null);
+  if (!list?.ok) return { known: false as const, reason: list ? why(list, "Webhooks: read") : "GitHub unreachable" };
+  const h = (list.data ?? []).find((x) => x.config?.url === url);
+  if (!h) return { known: true as const, registered: false };
+  return { known: true as const, registered: true, id: h.id, active: !!h.active, contentType: h.config?.content_type ?? null, events: h.events ?? [], last: h.last_response ? { code: h.last_response.code ?? null, status: h.last_response.status ?? null, message: h.last_response.message ?? null } : null };
+}
+
 export async function removeWebhook(src: Pick<AppSource, "repo" | "token">, url: string) {
   const list = await gh<any[]>(src, "GET", "/hooks?per_page=100");
   const found = list.ok ? (list.data ?? []).find((h) => h.config?.url === url) : null;

@@ -7,7 +7,7 @@ import * as repo from "../lib/repo";
 import { mintToken, publicToken } from "../lib/tokens";
 import { DeployError, deployFromSource, deploying } from "../services/deploy";
 import { fleetOf } from "../services/fleet";
-import { GithubError, commitStatus, ensureWebhook } from "../services/github";
+import { GithubError, commitStatus, ensureWebhook, webhookStatus } from "../services/github";
 import { startUpdate, updateStatus, versionInfo } from "../services/update";
 import { SourceError, fetchSource, validRepo, verifyGithubSignature } from "../services/source";
 import { failure, requireApp } from "./util";
@@ -100,6 +100,11 @@ export function automationRoutes(api: Hono) {
       webhook = await ensureWebhook(saved, v.webhookUrl, saved.webhookSecret).then((r) => ({ ok: true, ...r })).catch((e) => ({ ok: false, error: e.message }));
     }
     return c.json({ ...sourceView(c, app.name), webhook });
+  });
+  api.get("/api/apps/:name/source/webhook", async (c) => {
+    const { app, res } = requireApp(c); if (!app) return res;
+    const s = repo.getSource(app.name); if (!s) return c.json({ error: "no Git source" }, 404);
+    return c.json(await webhookStatus(s, sourceView(c, app.name)!.webhookUrl));
   });
   api.post("/api/apps/:name/source/webhook", async (c) => {
     const { app, res } = requireApp(c); if (!app) return res;
