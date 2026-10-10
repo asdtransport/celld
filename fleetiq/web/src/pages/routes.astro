@@ -20,7 +20,7 @@ import Drawer from "../components/Drawer.astro";
   <Drawer id="route" title="Add route" submit="Save route" formId="route-form">
     <form id="route-form">
       <label class="field"><span>Hostname</span><input type="text" name="host" required spellcheck="false" placeholder="board.example.com" />
-        <small>Use <code>*</code> for the route that answers any host without its own route.</small></label>
+        <small>The hostname must point at this server (DNS, or a name like <code>app.1-2-3-4.sslip.io</code>). The edge gets its HTTPS certificate on the first visit. Use <code>*</code> for the route that answers any host without its own route.</small></label>
       <label class="field"><span>Application</span><select name="app" id="route-app" required></select></label>
     </form>
   </Drawer>

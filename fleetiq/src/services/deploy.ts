@@ -20,12 +20,50 @@ export async function reloadFleet(app: App, log: string[]): Promise<ReloadResult
   if (!results.length) log.push("No live nodes to reload; nodes pick the version up when they start.");
   return results;
 }
+async function waitForNodes(app: App, timeoutMs: number): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    const leases = (await bucket.nodeLeases(app.prefix).catch(() => [])).filter((l) => l.expires_ms > Date.now());
+    if (leases.length) { await Bun.sleep(3_000); return true; }
+    await Bun.sleep(3_000);
+  }
+  return false;
+}
 const reloadSummary = (rs: ReloadResult[]) => {
   const bad = rs.filter((r) => r.outcome === "failed" || r.outcome === "unreachable");
   return bad.length ? `${bad.length} of ${rs.length} nodes did not adopt it` : null;
 };
 
 export class DeployError extends Error { constructor(m: string, public status = 400) { super(m); } }
+
+// Wrangler configs are JSONC: drop comments (outside strings) and trailing commas, then parse.
+export function parseJsonc(text: string): any {
+  let out = "", inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i + 1];
+    if (inStr) { out += c; if (c === "\\") { out += n ?? ""; i++; } else if (c === '"') inStr = false; continue; }
+    if (c === '"') { inStr = true; out += c; continue; }
+    if (c === "/" && n === "/") { while (i < text.length && text[i] !== "\n") i++; out += "\n"; continue; }
+    if (c === "/" && n === "*") { i = text.indexOf("*/", i + 2); if (i < 0) break; i++; continue; }
+    out += c;
+  }
+  return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
+}
+
+// An app that gates on the edge (AUTH_MODE "edge") needs the edge's public key. Leave the var as ""
+// in the project and FleetIQ fills in this server's key, so one archive works on any server.
+export function fillEdgeKey(text: string, key: string): { text: string; filled: boolean } {
+  if (!key) return { text, filled: false };
+  const re = /("AUTH_PUBLIC_KEY_B64"\s*:\s*)""/;
+  return re.test(text) ? { text: text.replace(re, `$1"${key}"`), filled: true } : { text, filled: false };
+}
+
+// D1 databases that ship migrations, from the project's config.
+export function d1WithMigrations(cfg: any): string[] {
+  return (Array.isArray(cfg?.d1_databases) ? cfg.d1_databases : [])
+    .filter((d: any) => d?.migrations_dir && (d.database_name || d.binding))
+    .map((d: any) => String(d.database_name || d.binding));
+}
 
 // Archive entries must stay inside the release dir: no absolute paths, no "..", no links or devices.
 export function checkArchiveListing(verbose: string): string | null {
@@ -82,14 +120,36 @@ export async function deployUpload(app: App, file: File, actor: string) {
     const name = configName(await Bun.file(join(root, cfgFile)).text());
     if (name !== app.name) throw new DeployError(`wrangler name is "${name}" but this application is "${app.name}" — rename one so they match`);
     log.push(`Project ${root.slice(releaseDir.length + 1)} (${cfgFile})`, `Deploying to ${config.bucket}/${app.prefix}`);
+    const cfgPath = join(root, cfgFile);
+    const edge = fillEdgeKey(await Bun.file(cfgPath).text(), config.authPublicKeyB64);
+    if (edge.filled) { await Bun.write(cfgPath, edge.text); log.push("Filled AUTH_PUBLIC_KEY_B64 with this server's edge key"); }
+    let cfg: any = null;
+    try { cfg = parseJsonc(edge.text); } catch (e: any) { throw new DeployError(`${cfgFile} is not valid JSONC: ${e.message}`); }
     const { version, output } = await celld.deploy(app.prefix, root);
     log.push(output);
     const nodes = await reloadFleet(app, log);
+    let migrateWarn: string | null = null;
+    const dbs = d1WithMigrations(cfg);
+    // A first deploy has no nodes yet: they start once a version exists. Give them a minute.
+    let live = nodes.some((n) => n.outcome !== "unreachable");
+    if (dbs.length && !live) {
+      log.push("Waiting for nodes to start before applying D1 migrations");
+      live = await waitForNodes(app, 90_000);
+    }
+    if (dbs.length && live) {
+      for (const db of dbs) {
+        try { log.push(`D1 ${db} migrations:`, await celld.d1Migrations(app.prefix, db, root, true)); }
+        catch (e: any) { migrateWarn = `D1 migrations for ${db} failed`; log.push(`D1 ${db} migrations failed: ${e.message}`); }
+      }
+    } else if (dbs.length) {
+      migrateWarn = "D1 migrations were not applied because no node is running; apply them from Data explorer once nodes start";
+      log.push(migrateWarn);
+    }
     // Keep the last successful project for D1 commands (database identity comes from its config).
     await unlink(projectDir(app.name)).catch(() => {});
     await symlink(root, projectDir(app.name));
     repo.finishDeployment(id, { status: "succeeded", version, log: log.join("\n") });
-    const warn = reloadSummary(nodes);
+    const warn = [reloadSummary(nodes), migrateWarn].filter(Boolean).join("; ") || null;
     repo.writeAudit({ actor, action: "deploy", target: app.name, outcome: "ok", detail: `${previous ?? "none"} → ${version}${warn ? `; ${warn}` : ""}` });
     await pruneReleases(app.name, 5);
     return { ...repo.getDeployment(id)!, nodes, warning: warn };

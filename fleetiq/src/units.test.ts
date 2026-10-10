@@ -1,11 +1,11 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { renderLbConfig } from "./adapters/caddy";
 import { parseJsonl } from "./adapters/celld";
 import { demuxLogs, nodeSpec } from "./adapters/docker";
 import { cleanError } from "./adapters/exec";
 import { parseState } from "./adapters/nodes";
 import { bindingsOf } from "./adapters/bucket";
-import { checkArchiveListing, configName } from "./services/deploy";
+import { checkArchiveListing, configName, d1WithMigrations, fillEdgeKey, parseJsonc } from "./services/deploy";
 
 test("archive listing: plain files and dirs pass; links, absolute and .. paths are refused", () => {
   expect(checkArchiveListing("drwxr-xr-x u/g 0 2026-10-09 19:00 app/\n-rw-r--r-- u/g 12 2026-10-09 19:00 app/wrangler.jsonc")).toBeNull();
@@ -65,4 +65,32 @@ test("bindings are grouped from the deployed manifest", () => {
   ] } });
   expect(b.kv[0]!.id).toBe("app-kv"); expect(b.d1[0]!.name).toBe("app"); expect(b.durableObjects[0]!.className).toBe("AppData");
   expect(b.consumers).toEqual(["q"]); expect(b.crons).toHaveLength(1); expect(b.vars[0]!.name).toBe("MODE");
+});
+
+describe("deploy config helpers", () => {
+  const cfgText = `{
+    // comment with "quotes" and a url http://x
+    "name": "worklog", /* block */
+    "vars": { "AUTH_MODE": "edge", "AUTH_PUBLIC_KEY_B64": "", "NOTE": "a // not a comment" },
+    "d1_databases": [
+      { "binding": "DB", "database_name": "worklog", "database_id": "worklog", "migrations_dir": "cloudflare/migrations" },
+      { "binding": "CACHE", "database_name": "cache", "database_id": "cache" },
+    ],
+  }`;
+  test("parses JSONC with comments, trailing commas and slashes in strings", () => {
+    const c = parseJsonc(cfgText);
+    expect(c.name).toBe("worklog");
+    expect(c.vars.NOTE).toBe("a // not a comment");
+  });
+  test("fills an empty edge key only", () => {
+    const r = fillEdgeKey(cfgText, "MFkw");
+    expect(r.filled).toBe(true);
+    expect(parseJsonc(r.text).vars.AUTH_PUBLIC_KEY_B64).toBe("MFkw");
+    expect(fillEdgeKey(r.text, "OTHER").filled).toBe(false);
+    expect(fillEdgeKey(cfgText, "").filled).toBe(false);
+  });
+  test("lists only D1 databases with migrations", () => {
+    expect(d1WithMigrations(parseJsonc(cfgText))).toEqual(["worklog"]);
+    expect(d1WithMigrations({})).toEqual([]);
+  });
 });

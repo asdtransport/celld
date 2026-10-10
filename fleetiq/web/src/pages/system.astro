@@ -26,13 +26,16 @@ import Drawer from "../components/Drawer.astro";
           <td>${c.service === "deploy" && /Exited \(0\)/.test(c.status) ? `<span class="status off">Finished</span><span class="sub">one-time deploy job</span>` : `<span class="status ${statusClass(c.state)}">${esc(c.state)}</span><span class="sub">${esc(c.status)}</span>`}</td>
           <td><code>${esc(c.image)}</code></td>
           <td class="row-actions"><button class="btn sm" type="button" data-logs="${esc(c.id)}" data-name="${esc(c.name)}">Logs</button>
-            ${c.service === "deploy" ? "" : c.state === "running" ? `<button class="btn sm" type="button" data-operator data-act="restart" data-id="${esc(c.id)}" data-name="${esc(c.name)}">Restart</button>`
+            ${c.service === "deploy" ? "" : c.state === "running" ? `<button class="btn sm" type="button" data-operator data-act="restart" data-id="${esc(c.id)}" data-name="${esc(c.name)}">Restart</button>${c.service === "fleetiq" || c.service === "edge" ? "" : `<button class="btn sm danger" type="button" data-operator data-act="stop" data-id="${esc(c.id)}" data-name="${esc(c.name)}">Stop</button>`}`
               : `<button class="btn sm" type="button" data-operator data-act="start" data-id="${esc(c.id)}" data-name="${esc(c.name)}">Start</button>`}</td></tr>`).join("")}</tbody></table>`
         : `<div class="empty">No stack containers found. FleetIQ lists containers from the compose projects in <code>STACK_PROJECTS</code> and the nodes it runs.</div>`;
       $("#list").querySelectorAll<HTMLButtonElement>("[data-act]").forEach((b) => b.addEventListener("click", async () => {
         const a = b.dataset.act!; const n = b.dataset.name!;
-        if (a === "restart" && !(await confirmAction({ title: `Restart ${n}?`, text: n.includes("node") ? "A restarting node hands its cells to the other nodes, then rejoins." : "It stops briefly while it restarts.", ok: "Restart" }))) return;
-        if (await act(b, () => api(`/api/containers/${b.dataset.id}/${a}`, { method: "POST" }), `${a === "restart" ? "Restarted" : "Started"} ${n}`)) setTimeout(load, 1500);
+        const isNode = n.includes("node");
+        if (a === "restart" && !(await confirmAction({ title: `Restart ${n}?`, text: isNode ? "A restarting node hands its cells to the other nodes, then rejoins." : "It stops briefly while it restarts.", ok: "Restart" }))) return;
+        if (a === "stop" && !(await confirmAction({ title: `Stop ${n}?`, text: isNode ? "The other nodes take over its cells within seconds, so the app keeps serving. It stays stopped until you start it here." : "Anything that depends on it stops working until you start it again here.", ok: "Stop" }))) return;
+        const done = { restart: "Restarted", start: "Started", stop: "Stopped" }[a] ?? a;
+        if (await act(b, () => api(`/api/containers/${b.dataset.id}/${a}`, { method: "POST" }), `${done} ${n}`)) setTimeout(load, 1500);
       }));
       $("#list").querySelectorAll<HTMLButtonElement>("[data-logs]").forEach((b) => b.addEventListener("click", async () => {
         const body = $("#logs-body"); body.innerHTML = `<div class="skeleton">Loading</div>`;

@@ -24,9 +24,11 @@ export async function identify(req: Request): Promise<Identity> {
 
 export const actorOf = (c: Context) => { const i = c.get("identity") as Identity | undefined; return i?.email ?? i?.sub ?? "unknown"; };
 
-// Every /api route except health requires a viewer; mutating methods require an operator.
+// Every /api route except health and the edge's certificate check requires a viewer;
+// mutating methods require an operator. /api/edge/allow only answers whether a hostname is routed.
+const OPEN = new Set(["/api/health", "/api/edge/allow"]);
 export const authMiddleware: MiddlewareHandler = async (c, next) => {
-  if (c.req.path === "/api/health") return next();
+  if (OPEN.has(c.req.path) && (c.req.method === "GET" || c.req.method === "HEAD")) return next();
   let id: Identity;
   try { id = await identify(c.req.raw); }
   catch (e) { return c.json({ error: e instanceof AccessError ? e.message : "authentication failed" }, 401); }

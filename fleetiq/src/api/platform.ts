@@ -97,10 +97,26 @@ export function platformRoutes(api: Hono) {
     catch (e) { return failure(c, e); }
   });
 
+  // ---- Edge certificate check ----
+  // The edge asks before it gets an HTTPS certificate for a hostname it hasn't seen (Caddy on-demand
+  // TLS). Only hostnames with a route qualify, so adding a route is all a new app needs.
+  api.get("/api/edge/allow", (c) => {
+    const host = (c.req.query("domain") ?? "").toLowerCase();
+    const ok = /^[a-z0-9.-]{1,253}$/.test(host) && repo.listRoutes().some((r) => r.host.toLowerCase() === host);
+    return ok ? c.text("ok") : c.text("no route for this hostname", 404);
+  });
+
   // ---- Containers (stack + managed nodes) ----
+  const NO_STOP = new Set(["fleetiq", "edge"]);
   api.get("/api/containers", async (c) => { try { return c.json(await listContainers()); } catch (e) { return failure(c, e); } });
   api.post("/api/containers/:id/:action", async (c) => {
     const action = ContainerAction.parse(c.req.param("action"));
+    // Stopping the console or the edge from the console would lock everyone out; refuse it here too.
+    if (action === "stop") {
+      const id = c.req.param("id");
+      const target = (await listContainers().catch(() => [])).find((x: any) => x.id === id || x.id.startsWith(id) || x.name === id);
+      if (target && NO_STOP.has(target.service ?? "")) return c.json({ error: `stopping ${target.name} would cut off this console; stop it from the server instead` }, 400);
+    }
     try { const r = await audited(c, `container.${action}`, c.req.param("id"), () => containerAction(c.req.param("id"), action), (x) => x.name); return c.json({ ok: true, name: r.name }); }
     catch (e) { return failure(c, e); }
   });

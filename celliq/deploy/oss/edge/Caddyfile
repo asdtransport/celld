@@ -13,6 +13,12 @@
 	order authenticate before respond
 	order authorize before reverse_proxy
 
+	# Any other hostname gets a certificate on its first visit, but only if FleetIQ has a route
+	# for it. Adding a route in the console is then all a new app needs.
+	on_demand_tls {
+		ask {$EDGE_ASK_URL:http://fleetiq:8790/api/edge/allow}
+	}
+
 	security {
 		local identity store localdb {
 			realm local
@@ -57,7 +63,7 @@
 	}
 }
 
-{$SITE_ADDRESS:localhost} {
+(app_site) {
 	encode zstd gzip
 
 	route /auth* {
@@ -75,6 +81,18 @@
 			header_up X-Forwarded-Proto {scheme}
 		}
 	}
+}
+
+{$SITE_ADDRESS:localhost} {
+	import app_site
+}
+
+# Apps added in FleetIQ: any hostname the console routes (see on_demand_tls above).
+https:// {
+	tls {
+		on_demand
+	}
+	import app_site
 }
 
 # FleetIQ console on its own hostname. The same portal is mounted here, so the session cookie

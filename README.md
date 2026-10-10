@@ -55,6 +55,28 @@ Only ports 80 and 443 (the edge). The load balancer listens on `127.0.0.1:8080`;
 and console are on a private Docker network. FleetIQ mounts the Docker socket, so the console is
 as powerful as root on this server. It is only reachable through the sign-in.
 
+## Deploy a WorkIQ app
+
+On your computer (needs bun), from this folder:
+
+```bash
+./workiq-pack.sh ~/code/my-app             # type check, tests, web build → my-app.tgz
+./workiq-pack.sh ~/code/my-app --name crm  # deploy it under another application name
+```
+
+The app must already run on celld: `wrangler.jsonc` at the project root and a static Astro build
+(the workiq-celld-deploy skill does that conversion). Then in the console:
+
+1. **Applications → Create application**: the same name, health check path `/api/health`.
+2. Open it → **Deploy** → upload the `.tgz`. D1 migrations run after the deploy, and the app's
+   sign-in check gets this server's edge key automatically.
+3. **Routes**: add `my-app.<app domain>` → `my-app` (for example `crm.179-236-68-136.sslip.io`).
+   The edge gets the HTTPS certificate on the first visit; nothing to run on the server.
+
+## Upgrade
+
+Run the same two install lines again. It keeps your passwords, sign-in key, apps and data.
+
 ## Day to day
 
 ```bash

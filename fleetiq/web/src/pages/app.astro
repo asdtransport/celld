@@ -49,9 +49,9 @@ import Drawer from "../components/Drawer.astro";
 
   <Drawer id="deploy" title="Deploy a version" submit="Upload and deploy" formId="deploy-form">
     <form id="deploy-form">
-      <p style="margin:0 0 14px;color:var(--ink-2)">Upload the project as a <code>.tar.gz</code>: <code>wrangler.jsonc</code>, the Worker source with its <code>node_modules</code> (or a pre-built bundle), and built static assets. celld bundles it and stores a new version.</p>
+      <p style="margin:0 0 14px;color:var(--ink-2)">Upload the project as a <code>.tar.gz</code>: <code>wrangler.jsonc</code>, the Worker source with its <code>node_modules</code>, and built static assets. celld bundles it and stores a new version. D1 migrations in the project are applied after the deploy.</p>
       <label class="field"><span>Project archive</span><input type="file" name="bundle" accept=".tgz,.tar.gz,application/gzip" required />
-        <small>Create one with <code>tar czf app.tgz -C my-app .</code></small></label>
+        <small>For a WorkIQ app: <code>./workiq-pack.sh my-app</code>. Anything else: <code>tar czf app.tgz -C my-app .</code></small></label>
       <div class="notice info" id="deploy-name-note"></div>
       <div id="deploy-result" style="margin-top:14px"></div>
     </form>

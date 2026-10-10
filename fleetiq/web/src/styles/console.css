@@ -1,5 +1,6 @@
 /* FleetIQ console — design tokens and components.
    One memorable element (the request path on Overview); everything else is quiet tables and forms. */
+[hidden] { display: none !important; }
 
 :root {
   --paper: #eef2f3;
