@@ -25,3 +25,5 @@ make local-down
 ```bash
 cd cloudflare && wrangler deploy
 ```
+
+<!-- Push-to-deploy test 2026-10-10T16:25:50Z: GitHub webhook -> FleetIQ -> build -> celld. -->
