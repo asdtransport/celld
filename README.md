@@ -80,6 +80,27 @@ FleetIQ downloads that commit, builds it in a throwaway container (type check, t
 deploys it. Turn on **Deploy on every push** and add the webhook shown there to the GitHub repo to ship
 on `git push`. Private repos need a read-only GitHub token on the same form.
 
+## Also deploy to Cloudflare
+
+**Cloud targets → Add Cloudflare account** (account ID + an API token limited to that account with
+Workers Scripts, D1, Workers KV Storage and Workers R2 Storage edit; Queues and Access: Apps and
+Policies if apps use them; Zone read for custom domains). FleetIQ runs a preflight and shows what
+the token can do.
+
+Then on an application's page, **Also on Cloudflare → Deploy to Cloudflare**: pick the account, a
+hostname on one of its domains (or leave it empty for workers.dev) and who may sign in through
+Cloudflare Access (emails or `@domain.com`). **Deploy the version running here** ships the exact
+build that runs on celld; **Deploy from Git** builds the Git source. Each deploy:
+
+1. creates any missing D1, KV, R2 and queues (named `<app>-…`, reused on later deploys),
+2. creates or updates the Access app for the hostname, with the health path bypassed,
+3. rewrites the celld config for Cloudflare (account, resource IDs, custom domain, `AUTH_MODE=access`),
+4. runs `wrangler deploy` and the D1 migrations in a throwaway container,
+5. checks from outside: health answers 200 and `/` redirects to your team's sign-in.
+
+**Dry run** validates the config with wrangler and bundles the Worker without touching Cloudflare.
+Data stays separate on each side; move it with the data mover.
+
 ## Data mover: backups, disaster recovery and client migrations
 
 **Data mover** in the console copies between any two places, like rsync for cloud storage. Built-in

@@ -36,6 +36,11 @@ import Drawer from "../components/Drawer.astro";
   </div>
 
   <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Also on Cloudflare</h2><button class="btn sm" type="button" id="cf-add-btn" data-operator>Deploy to Cloudflare</button></div>
+    <div class="panel-body" id="cf"><div class="skeleton">Loading</div></div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
     <div class="panel-head"><h2>Source</h2><button class="btn sm" type="button" data-drawer-open="git" data-operator id="git-edit-btn">Connect GitHub</button></div>
     <div class="panel-body" id="source"><div class="skeleton">Loading</div></div>
   </section>
@@ -85,13 +90,24 @@ import Drawer from "../components/Drawer.astro";
     </form>
   </Drawer>
 
+  <Drawer id="cf-link" title="Deploy to Cloudflare" submit="Save" formId="cf-form">
+    <form id="cf-form">
+      <label class="field"><span>Cloudflare account</span><select name="target" id="cf-target" required></select><small id="cf-target-note"></small></label>
+      <label class="field"><span>Hostname</span><input type="text" name="hostname" spellcheck="false" placeholder="crm.example.com" />
+        <small>A name on one of the account’s domains; Cloudflare creates the DNS record and certificate. Leave empty for a <code>workers.dev</code> address.</small></label>
+      <label class="check"><input type="checkbox" name="access" checked /><span>Protect with Cloudflare Access<small>Visitors sign in through your Zero Trust team before reaching the app. Needs a hostname.</small></span></label>
+      <label class="field"><span>Who can sign in</span><textarea name="allow" rows="3" spellcheck="false" placeholder="derek@example.com&#10;@lockstep.com"></textarea><small>One email per line, or <code>@domain.com</code> for everyone at a domain.</small></label>
+      <label class="field"><span>Worker name</span><input type="text" name="workerName" spellcheck="false" /></label>
+    </form>
+  </Drawer>
+
   <Drawer id="log" title="Deployment log">
     <div id="log-body"></div>
   </Drawer>
 </Console>
 
 <script>
-  import { $, act, ago, api, bytes, confirmAction, errorPanel, esc, qs, short, statusClass, toast, when } from "../lib/api";
+  import { $, act, ago, api, bytes, confirmAction, errorPanel, esc, gateOperatorControls, qs, short, statusClass, toast, when } from "../lib/api";
   const name = qs("name") ?? "";
   if (!name) location.replace("/apps");
   let data: any = null;
@@ -110,8 +126,64 @@ import Drawer from "../components/Drawer.astro";
       renderNodes(app, fleet);
       renderSummary(app, fleet, bindings, routes);
     } catch (e) { errorPanel($("#nodes"), e, load); }
-    loadVersions(); loadHistory(); loadSource();
+    loadVersions(); loadHistory(); loadSource().then(loadCf);
   }
+
+  // ---- Cloudflare targets ----
+  let cfTargets: any[] = []; let cfLinks: any[] = [];
+  async function loadCf() {
+    const el = $("#cf");
+    try {
+      [cfTargets, cfLinks] = await Promise.all([api<any[]>("/api/targets"), api<any[]>(`/api/apps/${encodeURIComponent(name)}/targets`)]);
+      $("#cf-target").innerHTML = cfTargets.map((t) => `<option value="${esc(t.id)}">${esc(t.name)} (${esc(t.accountId.slice(0, 8))}…)</option>`).join("");
+      $("#cf-add-btn").hidden = !cfTargets.length || cfTargets.every((t) => cfLinks.some((l) => l.target === t.id));
+      if (!cfTargets.length) { el.innerHTML = `<p style="margin:0;color:var(--ink-2)">Run this application on Cloudflare too: the same version, with its own D1, KV and R2, behind Cloudflare Access. <a href="/targets">Add a Cloudflare account</a> first.</p>`; return; }
+      if (!cfLinks.length) { el.innerHTML = `<p style="margin:0;color:var(--ink-2)">Not deployed to Cloudflare. Choose <strong>Deploy to Cloudflare</strong> to pick an account, a hostname and who can sign in.</p>`; return; }
+      el.innerHTML = cfLinks.map((l) => `<div class="cf-link"><dl class="kv-list">
+          <dt>Account</dt><dd>${esc(l.targetName)} · Worker <code>${esc(l.workerName)}</code></dd>
+          <dt>Address</dt><dd>${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.url)}</a>` : l.hostname ? `<code>${esc(l.hostname)}</code> (not deployed yet)` : "workers.dev (not deployed yet)"}</dd>
+          <dt>Sign-in</dt><dd>${l.access ? `Cloudflare Access: ${l.allow.map((a: string) => `<code>${esc(a)}</code>`).join(", ")}; <code>${esc(l.healthPath)}</code> open` : `<span class="status warn">Public</span>`}</dd>
+          <dt>Last deploy</dt><dd>${l.lastVersion ? `<code>${esc(l.lastVersion.slice(0, 13))}</code> ${ago(l.lastDeployAt)}` : "Never"}</dd>
+        </dl>
+        <div class="secret-actions" style="margin-top:12px">
+          <button class="btn sm primary" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="current">Deploy the version running here</button>
+          ${source ? `<button class="btn sm" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="git">Deploy from Git</button>` : ""}
+          <button class="btn sm" type="button" data-operator data-cf-deploy="${esc(l.target)}" data-from="current" data-dry="1">Dry run</button>
+          ${l.url ? `<button class="btn sm" type="button" data-cf-verify="${esc(l.target)}">Verify</button>` : ""}
+          <button class="btn sm" type="button" data-operator data-cf-edit="${esc(l.target)}">Edit</button>
+          <button class="btn sm danger" type="button" data-operator data-cf-unlink="${esc(l.target)}" data-tname="${esc(l.targetName)}">Unlink</button>
+        </div></div>`).join("");
+      el.querySelectorAll<HTMLButtonElement>("[data-cf-deploy]").forEach((b) => b.addEventListener("click", async () => {
+        const dry = b.dataset.dry === "1";
+        if (!dry && !(await confirmAction({ title: `Deploy ${name} to Cloudflare?`, text: b.dataset.from === "git" ? "FleetIQ builds the Git source and deploys it with wrangler. Missing D1, KV, R2 and queues are created; Access is set up for the hostname." : "FleetIQ deploys the exact version running here with wrangler. Missing D1, KV, R2 and queues are created; Access is set up for the hostname.", ok: "Deploy" }))) return;
+        let d: any; if (await act(b, async () => { d = await api(`/api/apps/${encodeURIComponent(name)}/targets/${b.dataset.cfDeploy}/deploy`, { method: "POST", json: { from: b.dataset.from, dryRun: dry } }); }, dry ? "Dry run started" : "Deploying to Cloudflare")) showLog(d.id, true).then(loadCf);
+      }));
+      el.querySelectorAll<HTMLButtonElement>("[data-cf-verify]").forEach((b) => b.addEventListener("click", async () => {
+        let r: any; if (await act(b, async () => { r = await api(`/api/apps/${encodeURIComponent(name)}/targets/${b.dataset.cfVerify}/verify`, { method: "POST" }); }, "Checked")) {
+          $("#log-body").innerHTML = `<pre class="log">${esc(r.result)}</pre>`; (document.getElementById("log") as HTMLDialogElement).showModal();
+        }
+      }));
+      el.querySelectorAll<HTMLButtonElement>("[data-cf-edit]").forEach((b) => b.addEventListener("click", () => openCf(cfLinks.find((l) => l.target === b.dataset.cfEdit))));
+      el.querySelectorAll<HTMLButtonElement>("[data-cf-unlink]").forEach((b) => b.addEventListener("click", async () => {
+        if (!(await confirmAction({ title: `Unlink ${name} from ${b.dataset.tname}?`, text: "FleetIQ stops deploying there. The Worker, its data and the Access app on Cloudflare are left as they are.", ok: "Unlink" }))) return;
+        if (await act(b, () => api(`/api/apps/${encodeURIComponent(name)}/targets/${b.dataset.cfUnlink}`, { method: "DELETE" }), "Unlinked")) loadCf();
+      }));
+      gateOperatorControls(el);
+    } catch (e) { errorPanel(el, e, loadCf); }
+  }
+  function openCf(l?: any) {
+    const f = $<HTMLFormElement>("#cf-form"); f.reset();
+    const el = (n: string) => f.elements.namedItem(n) as HTMLInputElement;
+    if (l) { el("target").value = l.target; el("hostname").value = l.hostname ?? ""; el("access").checked = l.access; (f.elements.namedItem("allow") as HTMLTextAreaElement).value = l.allow.join("\n"); el("workerName").value = l.workerName; }
+    else el("workerName").value = name;
+    (document.getElementById("cf-link") as HTMLDialogElement).showModal();
+  }
+  $("#cf-add-btn").addEventListener("click", () => openCf());
+  $<HTMLFormElement>("#cf-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(ev.target as HTMLFormElement);
+    const body = { hostname: String(f.get("hostname") || "").trim() || null, access: f.get("access") === "on", allow: String(f.get("allow") || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean), workerName: String(f.get("workerName") || "").trim() || undefined };
+    if (await act(document.querySelector('button[form="cf-form"]'), () => api(`/api/apps/${encodeURIComponent(name)}/targets/${f.get("target")}`, { method: "PUT", json: body }), "Saved")) { (document.getElementById("cf-link") as HTMLDialogElement).close(); loadCf(); }
+  });
 
   // ---- Git source ----
   let source: any = null;
@@ -243,7 +315,7 @@ import Drawer from "../components/Drawer.astro";
       el.innerHTML = ds.length ? `<table class="data"><thead><tr><th>Change</th><th>Result</th><th>When</th></tr></thead><tbody>${
         ds.map((d) => {
           const reason = d.status === "failed" ? String(d.log ?? "").trim().split("\n").pop() : "";
-          const what = d.status === "running" ? `Building and deploying ${esc(d.source ?? "")}` : d.status === "failed"
+          const what = d.kind === "cloudflare" ? `${d.status === "running" ? "Deploying" : d.status === "failed" ? "Couldn’t deploy" : /dry run/.test(d.source ?? "") ? "Checked a deploy" : "Deployed"} to ${esc(d.source ?? "Cloudflare")}${d.version ? ` <code>${esc(short(d.version, 8))}</code>` : ""}` : d.status === "running" ? `Building and deploying ${esc(d.source ?? "")}` : d.status === "failed"
             ? `${d.kind === "rollback" ? "Rollback" : "Deploy"} of ${esc(d.kind === "rollback" ? short(d.source) : d.source ?? "upload")} rejected`
             : d.kind === "rollback" ? `Rolled back <code>${esc(short(d.previousVersion))}</code> to <code>${esc(short(d.version))}</code>`
             : d.previousVersion ? `Deployed <code>${esc(short(d.version))}</code>, replacing <code>${esc(short(d.previousVersion))}</code>` : `Deployed <code>${esc(short(d.version))}</code>, the first version`;

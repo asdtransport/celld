@@ -3,6 +3,7 @@ import { appRoutes } from "./api/apps";
 import { automationRoutes, hookRoutes } from "./api/automation";
 import { mcpRoutes } from "./api/catalog";
 import { moverRoutes } from "./api/mover";
+import { targetRoutes } from "./api/targets";
 import { dataRoutes } from "./api/data";
 import { platformRoutes } from "./api/platform";
 import { authMiddleware } from "./auth";
@@ -18,6 +19,7 @@ export const registerRoutes = (app: Hono) => {
   platformRoutes(app);
   automationRoutes(app);
   moverRoutes(app);
+  targetRoutes(app);
   hookRoutes(app);
   mcpRoutes(app);
 };

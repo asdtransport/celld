@@ -1,0 +1,64 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Cloud targets" active="targets">
+  <header class="page-head">
+    <div>
+      <h1>Cloud targets</h1>
+      <p>Other clouds your applications can also run on. Add a Cloudflare account once, then deploy any application to it from the application’s page: the same version that runs here, behind Cloudflare Access.</p>
+    </div>
+    <div class="actions"><button class="btn primary" type="button" data-drawer-open="target" data-operator>Add Cloudflare account</button></div>
+  </header>
+  <section class="panel"><div class="table-wrap" id="targets"><div class="empty skeleton">Loading</div></div></section>
+  <section class="panel" style="margin-top:18px" id="pre-panel" hidden>
+    <div class="panel-head"><h2 id="pre-title">Preflight</h2><span class="hint">What this token can do in the account</span></div>
+    <div class="table-wrap" id="pre"></div>
+  </section>
+
+  <Drawer id="target" title="Add Cloudflare account" submit="Check and save" formId="target-form">
+    <form id="target-form">
+      <label class="field"><span>Name</span><input type="text" name="name" required maxlength="60" placeholder="lockstep-prod" autocomplete="off" /></label>
+      <label class="field"><span>Account ID</span><input type="text" name="accountId" required pattern="[0-9a-fA-F]{32}" spellcheck="false" placeholder="32 hex characters" />
+        <small>Cloudflare dashboard → Workers &amp; Pages → Account details.</small></label>
+      <label class="field"><span>API token</span><input type="password" name="apiToken" required autocomplete="off" />
+        <small>My Profile → API Tokens → Create Token → Custom. Account permissions: Workers Scripts, D1, Workers KV Storage, Workers R2 Storage (Edit); add Queues and Access: Apps and Policies (Edit) if apps use them; Zone: Read and Workers Routes: Edit for custom domains. Limit it to this account. FleetIQ never shows it again.</small></label>
+    </form>
+  </Drawer>
+</Console>
+<script>
+  import { $, act, ago, api, confirmAction, errorPanel, esc, gateOperatorControls } from "../lib/api";
+  function showPre(name: string, p: any) {
+    $("#pre-panel").hidden = false; $("#pre-title").textContent = `Preflight: ${name}`;
+    $("#pre").innerHTML = `<table class="data"><tbody>${p.checks.map((c: any) => `<tr><td style="width:28%"><span class="status ${c.ok ? "ok" : c.check === "account" || c.check === "Workers scripts" || c.check === "D1" || c.check === "KV" ? "bad" : "warn"}">${esc(c.check)}</span></td><td><span class="sub" style="color:var(--ink-2)">${esc(c.detail)}</span></td></tr>`).join("")}
+      <tr><td>Domains</td><td><span class="sub" style="color:var(--ink-2)">${p.zones?.length ? p.zones.map((z: string) => `<code>${esc(z)}</code>`).join(" ") : "none visible"}${p.workersDev ? ` · workers.dev: <code>${esc(p.workersDev)}</code>` : ""}</span></td></tr></tbody></table>`;
+    $("#pre-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  async function load() {
+    try {
+      const ts = await api<any[]>("/api/targets");
+      $("#targets").innerHTML = ts.length ? `<table class="data"><thead><tr><th>Target</th><th>Account</th><th>Applications</th><th>Added</th><th></th></tr></thead><tbody>${
+        ts.map((t) => `<tr><td class="main-cell"><strong>${esc(t.name)}</strong><span class="sub">Cloudflare · token ${esc(t.apiToken)}</span></td>
+          <td><code>${esc(t.accountId)}</code></td>
+          <td>${t.apps.length ? t.apps.map((a: string) => `<a href="/app?name=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ") : `<span class="sub">none yet</span>`}</td>
+          <td>${ago(t.createdAt)}<span class="sub">by ${esc(t.createdBy)}</span></td>
+          <td class="row-actions"><button class="btn sm" type="button" data-pre="${esc(t.id)}" data-name="${esc(t.name)}">Preflight</button><button class="btn sm danger" type="button" data-operator data-del="${esc(t.id)}" data-name="${esc(t.name)}">Remove</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty"><strong>No cloud targets</strong>Add a Cloudflare account to deploy applications there as well as here: for a client who wants Cloudflare, or as a standby.</div>`;
+      $("#targets").querySelectorAll<HTMLButtonElement>("[data-pre]").forEach((b) => b.addEventListener("click", async () => {
+        let p: any; if (await act(b, async () => { p = await api(`/api/targets/${b.dataset.pre}/preflight`, { method: "POST" }); }, "Checked")) showPre(b.dataset.name!, p);
+      }));
+      $("#targets").querySelectorAll<HTMLButtonElement>("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+        if (!(await confirmAction({ title: `Remove ${b.dataset.name}?`, text: "FleetIQ forgets this account. Nothing on Cloudflare is deleted.", ok: "Remove" }))) return;
+        if (await act(b, () => api(`/api/targets/${b.dataset.del}`, { method: "DELETE" }), "Removed")) load();
+      }));
+      gateOperatorControls($("#targets"));
+    } catch (e) { errorPanel($("#targets"), e, load); }
+  }
+  $<HTMLFormElement>("#target-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(ev.target as HTMLFormElement);
+    const body = { name: String(f.get("name")).trim(), accountId: String(f.get("accountId")).trim(), apiToken: String(f.get("apiToken")).trim() };
+    let t: any; if (!(await act(document.querySelector('button[form="target-form"]'), async () => { t = await api("/api/targets", { method: "POST", json: body }); }, `Added ${body.name}`))) return;
+    (document.getElementById("target") as HTMLDialogElement).close(); (ev.target as HTMLFormElement).reset(); load(); showPre(t.name, t.preflight);
+  });
+  load();
+</script>

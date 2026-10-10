@@ -127,3 +127,31 @@ export const moverRuns = sqliteTable("mover_runs", {
   finishedAt: integer("finished_at"),
 });
 export type MoverRun = typeof moverRuns.$inferSelect;
+
+// ---- Deploy targets (other clouds an app can also run on) ----
+export const targets = sqliteTable("targets", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  provider: text("provider").notNull(),          // cloudflare
+  config: text("config").notNull(),              // JSON: { accountId, apiToken }
+  createdBy: text("created_by"),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+export type Target = typeof targets.$inferSelect;
+
+export const appTargets = sqliteTable("app_targets", {
+  app: text("app").notNull(),
+  target: text("target").notNull(),
+  workerName: text("worker_name").notNull(),
+  hostname: text("hostname"),                    // custom domain on a zone in the account; null = workers.dev
+  access: integer("access").notNull().default(1), // gate with Cloudflare Access
+  allow: text("allow"),                          // JSON: emails or @domains allowed through Access
+  healthPath: text("health_path").notNull().default("/api/health"),
+  resources: text("resources"),                  // JSON: provisioned ids
+  accessAud: text("access_aud"),
+  url: text("url"),
+  lastVersion: text("last_version"),
+  lastDeployAt: integer("last_deploy_at"),
+  updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+export type AppTarget = typeof appTargets.$inferSelect;

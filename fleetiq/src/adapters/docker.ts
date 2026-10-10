@@ -101,13 +101,18 @@ export async function removeNode(name: string) {
 // memory-capped, removed afterwards. Files go in and out through the archive API (tar streams).
 export async function runBuilder(opts: {
   image: string; env: string[]; files: { name: string; data: Uint8Array }[]; timeoutMs: number; memoryMb: number;
-  onLog?: (text: string) => void;
+  onLog?: (text: string) => void; script?: string; outPath?: string | null;
 }): Promise<{ exitCode: number; logs: string; output: Uint8Array | null }> {
   const name = `fleetiq-build-${Date.now().toString(36)}`;
+  const outPath = opts.outPath === undefined ? "/tmp/out/app.tgz" : opts.outPath;
   const body = {
-    Image: opts.image, Cmd: ["sh", "/app/bin/build.sh"], Env: opts.env, WorkingDir: "/tmp",
+    Image: opts.image, Cmd: ["sh", `/app/bin/${opts.script ?? "build.sh"}`], Env: opts.env, WorkingDir: "/tmp",
     Labels: { "fleetiq.role": "builder" },
-    HostConfig: { NetworkMode: "bridge", Memory: opts.memoryMb * 1024 * 1024, AutoRemove: false },
+    HostConfig: {
+      NetworkMode: "bridge", Memory: opts.memoryMb * 1024 * 1024, AutoRemove: false,
+      // Package downloads (bun, wrangler) are cached between builds; nothing else persists.
+      Mounts: [{ Type: "volume", Source: "fleetiq-builder-cache", Target: "/root/.bun/install/cache" }],
+    },
   };
   await unixJson(config.dockerSock, `${API}/containers/create?name=${name}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, 30_000);
   const sock = config.dockerSock;
@@ -130,7 +135,8 @@ export async function runBuilder(opts: {
     }
     const logs = await builderLogs(name).catch(() => "");
     if (state.ExitCode !== 0) return { exitCode: state.ExitCode, logs, output: null };
-    const r = await fetch(`http://localhost${API}/containers/${name}/archive?path=/tmp/out/app.tgz`, { unix: sock } as any);
+    if (!outPath) return { exitCode: 0, logs, output: null };
+    const r = await fetch(`http://localhost${API}/containers/${name}/archive?path=${encodeURIComponent(outPath)}`, { unix: sock } as any);
     if (!r.ok) return { exitCode: 1, logs: `${logs}\n✗ the build produced no archive`, output: null };
     return { exitCode: 0, logs, output: extractSingleFromTar(new Uint8Array(await r.arrayBuffer())) };
   } finally {
