@@ -119,13 +119,15 @@ export function controls(postures = appPostures()): Control[] {
   });
 
   // A1.2 — backups
-  const noBackup = live.filter((p) => !p.backupJobs);
+  // Previews are throwaway copies (fleetiq deploy): they don't need backups.
+  const previews = new Set(repo.listApps().filter((a) => (a.description ?? "").startsWith("Preview of ")).map((a) => a.name));
+  const noBackup = live.filter((p) => !p.backupJobs && !previews.has(p.app));
   const staleBackup = live.filter((p) => p.backupJobs && (p.lastBackup ?? 0) < t - 7 * DAY);
   out.push({
     id: "backups", criteria: "A1.2", family: "Availability", title: "Every app is backed up somewhere else",
-    status: !live.length ? "n/a" : noBackup.length === live.length ? "fail" : noBackup.length || staleBackup.length ? "warn" : "pass",
+    status: !live.length ? "n/a" : noBackup.length && noBackup.length === live.filter((p) => !previews.has(p.app)).length ? "fail" : noBackup.length || staleBackup.length ? "warn" : "pass",
     detail: !live.length ? "No application is live yet." : noBackup.length ? `No backup job for ${noBackup.map((p) => p.app).join(", ")}: Data mover → Back up.` : staleBackup.length ? `No successful backup in 7 days for ${staleBackup.map((p) => p.app).join(", ")}.` : "Every live app has a backup that succeeded in the last 7 days.",
-    facts: live.map((p) => `${p.app}: ${p.backupJobs} backup job${p.backupJobs === 1 ? "" : "s"}, last success ${p.lastBackup ? new Date(p.lastBackup * 1000).toISOString().slice(0, 10) : "never"}`),
+    facts: live.filter((p) => !previews.has(p.app)).map((p) => `${p.app}: ${p.backupJobs} backup job${p.backupJobs === 1 ? "" : "s"}, last success ${p.lastBackup ? new Date(p.lastBackup * 1000).toISOString().slice(0, 10) : "never"}`),
   });
 
   // A1.3 — recovery tested
