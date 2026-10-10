@@ -15,6 +15,9 @@ const q = (description: string, extra: Partial<P> = {}): P => ({ type: "string",
 export const OPS: Op[] = [
   { tool: "system", method: "GET", path: "/api/system", summary: "Everything at a glance: apps with versions, nodes, routes and Git sources; containers; builder and bucket settings; who you are." },
   { tool: "overview", method: "GET", path: "/api/overview", summary: "Live health of each hop on the request path (edge, tunnel, load balancer, nodes, bucket) and recent activity." },
+  { tool: "platform_version", method: "GET", path: "/api/platform/version", summary: "The stack's installed commit, the latest on GitHub, and the commits in between." },
+  { tool: "update_platform", method: "POST", path: "/api/platform/update", summary: "Update the whole stack (console, edge, CellIQ images) to the latest commit: a helper container re-runs install.sh; passwords, keys, options and data are kept. The console restarts during it.", params: { ref: s("branch, tag or commit; default the configured branch") } },
+  { tool: "update_status", method: "GET", path: "/api/platform/update", summary: "Progress and log of the latest platform update." },
   { tool: "list_apps", method: "GET", path: "/api/apps", summary: "List applications with their live version, node counts and last deployment." },
   { tool: "get_app", method: "GET", path: "/api/apps/{name}", summary: "One application: fleet nodes with state, bindings (DOs, KV, D1, R2, queues) and routes.", params: { name } },
   { tool: "create_app", method: "POST", path: "/api/apps", summary: "Register an application (one celld fleet). Then scale it, deploy it and add a route.", params: {

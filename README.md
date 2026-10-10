@@ -157,7 +157,16 @@ every change under the token's name in Activity, and refuses to let a token crea
 
 ## Upgrade
 
-Run the same two install lines again. It keeps your passwords, sign-in key, apps and data.
+**From the console:** Containers → **Platform version** shows the installed commit, the latest on
+GitHub and what changed; **Update now** downloads that exact commit and re-runs the installer in a
+one-shot helper container. Passwords, keys, options and data are kept; the console is away for a
+minute or two and comes back on the new version. The log stays on the page. API: `POST
+/api/platform/update`; Claude connector: `update_platform`.
+
+**From the server:** run the install lines again. Options from the last run are kept in
+`/opt/celld-stack/install.env` (domain, ports, bucket, pinned images), so a plain `./install.sh`
+re-applies them. Servers that can't reach GitHub can set `UPDATE_SOURCE_URL` (a `.tar.gz` of this
+bundle) in `FLEETIQ_EXTRA_ENV`.
 
 ## Day to day
 

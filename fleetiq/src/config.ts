@@ -38,6 +38,14 @@ export const config = {
   builderCaFile: env("BUILDER_CA_FILE"),          // extra CA for the build (TLS-intercepting proxies)
   githubToken: env("GITHUB_TOKEN"),                // default token for private GitHub repos
   githubApi: env("GITHUB_API", "https://api.github.com"),
+  // Self-update: the installer runs again in a one-shot helper container with the Docker socket and the
+  // stack folder (same path on the host). STACK_VERSION is the commit the stack was installed from.
+  stackPrefix: env("STACK_PREFIX", ""),
+  stackVersion: env("STACK_VERSION", ""),
+  updateRepo: env("UPDATE_REPO", "asdtransport/celld"),
+  updateRef: env("UPDATE_REF", "celld-stack"),
+  updaterImage: env("UPDATER_IMAGE", "docker:27-cli"),
+  updateSourceUrl: env("UPDATE_SOURCE_URL", ""),   // install from this .tar.gz instead of GitHub (mirrors, air-gapped sites)
   // The console's public URL, for webhook and MCP addresses shown in the UI.
   publicUrl: env("CONSOLE_URL", "").replace(/\/+$/, ""),
 };

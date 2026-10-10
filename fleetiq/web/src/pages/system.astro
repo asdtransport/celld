@@ -10,6 +10,10 @@ import Drawer from "../components/Drawer.astro";
     </div>
     <div class="actions"><button class="btn" type="button" id="refresh">Refresh</button></div>
   </header>
+  <section class="panel" id="update-panel" style="margin-bottom:18px">
+    <div class="panel-head"><h2>Platform version</h2><span class="hint" id="update-hint">Checking GitHub</span></div>
+    <div class="panel-body" id="update"><div class="skeleton">Checking</div></div>
+  </section>
   <section class="panel"><div class="table-wrap" id="list"><div class="empty skeleton">Asking Docker</div></div></section>
   <Drawer id="logs" title="Logs"><div id="logs-body"></div></Drawer>
 </Console>
@@ -47,6 +51,48 @@ import Drawer from "../components/Drawer.astro";
       gateOperatorControls($("#list"));
     } catch (e) { errorPanel($("#list"), e, load); }
   }
+  // ---- platform updates ----
+  const short7 = (s: string | null) => (s && /^[0-9a-f]{7,}$/.test(s) ? s.slice(0, 7) : s ?? "unknown");
+  async function loadUpdate() {
+    const el = $("#update");
+    try {
+      const [v, st] = await Promise.all([api<any>("/api/platform/version"), api<any>("/api/platform/update")]);
+      $("#update-hint").textContent = `${v.repo} · ${v.ref}`;
+      const lastRun = st.last ? `<p style="margin:12px 0 0"><span class="status ${st.running ? "warn" : st.last.exitCode === 0 ? "ok" : "bad"}">${st.running ? "Updating" : st.last.exitCode === 0 ? "Last update finished" : "Last update failed"}</span> <span class="sub">to <code>${esc(short7(st.last.version))}</code>${st.last.actor ? ` by ${esc(st.last.actor)}` : ""}${st.last.startedAt ? `, ${esc(new Date(st.last.startedAt).toLocaleString())}` : ""}</span> <button class="btn sm" type="button" id="update-log-btn">Log</button></p>` : "";
+      const behind = v.behind;
+      el.innerHTML = `<dl class="kv-list">
+          <dt>Installed</dt><dd><code>${esc(short7(v.current))}</code>${v.current && !/^[0-9a-f]{7,}$/.test(v.current) ? " <span class='sub'>(installed by hand; the first update records the exact commit)</span>" : ""}</dd>
+          <dt>Latest</dt><dd>${v.mirror ? `whatever the mirror serves (<code>${esc(v.repo)}</code>)` : v.latest ? `<code>${esc(v.latest.sha.slice(0, 7))}</code> ${esc(v.latest.message)}` : "GitHub didn't answer"}</dd>
+          <dt>Status</dt><dd>${behind === 0 ? `<span class="status ok">Up to date</span>` : behind ? `<span class="status warn">${behind} new commit${behind === 1 ? "" : "s"}</span>` : v.latest ? `<span class="status warn">Update available</span>` : "—"}</dd>
+        </dl>
+        ${v.commits?.length ? `<pre class="log" style="margin-top:12px;max-height:180px">${esc(v.commits.map((c: any) => `${c.sha.slice(0, 7)}  ${c.message}`).join("\n"))}</pre>` : ""}
+        <div class="secret-actions" style="margin-top:12px">${v.canUpdate ? `<button class="btn sm primary" type="button" data-operator id="update-btn" ${st.running || behind === 0 ? "disabled" : ""}>${st.running ? "Updating…" : behind === 0 ? "Up to date" : "Update now"}</button>` : `<span class="sub">${esc(v.reason)}</span>`}</div>${lastRun}`;
+      document.getElementById("update-btn")?.addEventListener("click", startUpdate);
+      document.getElementById("update-log-btn")?.addEventListener("click", () => showUpdateLog(false));
+      gateOperatorControls(el);
+      if (st.running) setTimeout(loadUpdate, 4000);
+    } catch (e) { errorPanel(el, e, loadUpdate); }
+  }
+  async function startUpdate(ev: Event) {
+    if (!(await confirmAction({ title: "Update the platform?", text: "FleetIQ downloads the latest commit and re-runs the installer: new console, edge and app images, then a restart. Passwords, keys, settings and data are kept. The console is unavailable for a minute or two; apps keep serving except during their brief restart.", ok: "Update now" }))) return;
+    if (await act(ev.currentTarget as HTMLButtonElement, () => api("/api/platform/update", { method: "POST", json: {} }), "Update started")) showUpdateLog(true);
+  }
+  async function showUpdateLog(follow: boolean) {
+    const dlg = document.getElementById("logs") as HTMLDialogElement; if (!dlg.open) dlg.showModal();
+    document.getElementById("logs-title")!.textContent = "Platform update";
+    const body = $("#logs-body");
+    for (;;) {
+      try {
+        const st = await api<any>("/api/platform/update");
+        body.innerHTML = `<p style="margin:0 0 10px"><span class="status ${st.running ? "warn" : st.last?.exitCode === 0 ? "ok" : "bad"}">${st.running ? "Updating" : st.last?.exitCode === 0 ? "Finished" : "Failed"}</span></p><pre class="log" style="max-height:65vh">${esc(st.last?.logs || "Starting…")}</pre>`;
+        const pre = body.querySelector("pre")!; pre.scrollTop = pre.scrollHeight;
+        if (!st.running) { loadUpdate(); if (follow && st.last?.exitCode === 0) setTimeout(() => location.reload(), 2500); return; }
+      } catch { body.querySelector("p")!.innerHTML = `<span class="status warn">The console is restarting with the new version…</span>`; }
+      if (!dlg.open) return;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
   $("#refresh").addEventListener("click", load);
-  load();
+  load(); loadUpdate();
 </script>

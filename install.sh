@@ -20,6 +20,10 @@ set -euo pipefail
 DOMAIN="" ; PUBLIC_IP="" ; EMAIL=""
 S3_ENDPOINT_EXT="" ; S3_BUCKET="fleet" ; S3_KEY="" ; S3_SECRET="" ; REGION="us-east-1"
 PREFIX="${PREFIX:-/opt/celld-stack}"
+# Options from the last run (written below), so a re-run or an update from the console keeps the
+# same domain, ports and bucket. Flags on this run still win.
+# shellcheck disable=SC1091
+[ -f "$PREFIX/install.env" ] && . "$PREFIX/install.env"
 TLS_MODE="${TLS_MODE:-acme}"            # acme | internal (internal = Caddy's own CA, for tests)
 SKIP_DOCKER_INSTALL="${SKIP_DOCKER_INSTALL:-0}"
 BUILD_FLAGS="${BUILD_FLAGS:-}"           # extra `docker buildx build` flags (mirrors, CA secrets)
@@ -28,7 +32,7 @@ HTTP_PORT="${HTTP_PORT:-80}" ; HTTPS_PORT="${HTTPS_PORT:-443}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="$2"; shift 2 ;;
-    --ip) PUBLIC_IP="$2"; shift 2 ;;
+    --ip) PUBLIC_IP="$2"; PUBLIC_IP_SET=1; shift 2 ;;
     --email) EMAIL="$2"; shift 2 ;;
     --s3-endpoint) S3_ENDPOINT_EXT="$2"; shift 2 ;;
     --s3-bucket) S3_BUCKET="$2"; shift 2 ;;
@@ -89,6 +93,14 @@ ok "console  https://$CONSOLE_HOST"
 # ---------------------------------------------------------------- files + secrets
 say "Installing to $PREFIX"
 mkdir -p "$PREFIX"
+{
+  echo "# Options of the last install.sh run (no secrets). Edit, then re-run install.sh or update from the console."
+  for v in DOMAIN EMAIL S3_ENDPOINT_EXT S3_BUCKET REGION TLS_MODE HTTP_PORT HTTPS_PORT BUILD_FLAGS FLEETIQ_EXTRA_ENV UPDATE_REPO UPDATE_REF LB_IMAGE SEAWEEDFS_IMAGE AWSCLI_IMAGE NODE_IMAGE; do
+    printf '%s=%q\n' "$v" "${!v:-}"
+  done
+  if [ -n "${PUBLIC_IP_SET:-}" ]; then printf 'PUBLIC_IP=%q\nPUBLIC_IP_SET=1\n' "$PUBLIC_IP"; fi
+} > "$PREFIX/install.env"
+chmod 600 "$PREFIX/install.env"
 for d in celliq fleetiq; do
   # Keep generated state (env files, keys) across upgrades; replace code.
   rsync_exclude=(--exclude node_modules --exclude 'web/dist' --exclude '.celld' --exclude 'local/*.db*')
@@ -135,6 +147,11 @@ CELLIQ_PORT=127.0.0.1:8080
 EDGE_URL=https://$APP_HOST$( [ "$HTTPS_PORT" != 443 ] && echo ":$HTTPS_PORT" )
 CONSOLE_URL=https://$CONSOLE_HOST$( [ "$HTTPS_PORT" != 443 ] && echo ":$HTTPS_PORT" )
 GITHUB_TOKEN=${FLEETIQ_GITHUB_TOKEN:-}
+# Updates from the console: FleetIQ runs this installer again from $UPDATE_REPO@$UPDATE_REF.
+STACK_VERSION=${STACK_VERSION:-manual-$(date -u +%Y%m%d%H%M)}
+STACK_PREFIX=$PREFIX
+UPDATE_REPO=${UPDATE_REPO:-asdtransport/celld}
+UPDATE_REF=${UPDATE_REF:-celld-stack}
 EOF
 # Extra settings for FleetIQ and the nodes (one KEY=value per line), e.g. BUILDER_CA_FILE behind a TLS proxy.
 [ -n "${FLEETIQ_EXTRA_ENV:-}" ] && printf '%s\n' "$FLEETIQ_EXTRA_ENV" >> celliq/deploy/celld/.env
@@ -161,7 +178,7 @@ ok "wrote stack configuration"
 # ---------------------------------------------------------------- images
 say "Building images (first run: 3–6 minutes)"
 build() { local tag="$1" ctx="$2"; shift 2; docker buildx build --load $BUILD_FLAGS "$@" -t "$tag" "$ctx" >>"$LOG" 2>&1 || die "build failed: $tag — see $LOG"; ok "$tag"; }
-SHA="$(date +%Y%m%d%H%M)"
+SHA="${STACK_VERSION:-$(date +%Y%m%d%H%M)}"; SHA="${SHA:0:12}"
 build celliq-celld:latest celliq --build-arg BUILD_SHA="$SHA"
 build fleetiq:latest fleetiq --build-arg BUILD_SHA="$SHA" --build-arg RUN_CHECKS="${RUN_CHECKS:-0}"
 build celliq-edge-caddy:latest celliq/deploy/oss/edge -f celliq/deploy/oss/edge/Dockerfile.caddy
@@ -171,6 +188,7 @@ for img in "${NODE_IMAGE:-ghcr.io/denoland/celld:0.6.2}"; do docker image inspec
 SITE="docker compose -f celliq/deploy/celld/compose.yml ${COMPOSE_EXTRA:+-f $COMPOSE_EXTRA} --env-file celliq/deploy/celld/.env"
 EDGE="docker compose -f celliq/deploy/oss/compose.edge.yml --env-file celliq/deploy/oss/.env.edge"
 export CELLIQ_IMAGE=celliq-celld:latest FLEETIQ_IMAGE=fleetiq:latest EDGE_CADDY_IMAGE=celliq-edge-caddy:latest
+for v in LB_IMAGE SEAWEEDFS_IMAGE AWSCLI_IMAGE; do if [ -n "${!v:-}" ]; then export "${v?}"; fi; done
 # Compose interpolates ${VARS} from the shell before --env-file, so a shell with its own AWS_* would
 # leak into the bucket's identity config. Pin them to the stack's values for every compose call.
 unset AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE
@@ -213,7 +231,7 @@ cat <<EOF
   ────────────────────────────────────────────────────────────────
   Console   https://$CONSOLE_HOST$port_sfx
   App       https://$APP_HOST$port_sfx
-  Sign in   user: $ADMIN_USER   password: $ADMIN_PASSWORD
+  Sign in   user: $ADMIN_USER   password: $( [ -n "${STACK_UPDATE:-}" ] && echo "(unchanged, in $SECRETS)" || echo "$ADMIN_PASSWORD" )
             (stored in $SECRETS — change it after first sign-in)
 
   Only ports $HTTP_PORT and $HTTPS_PORT are published. The load balancer listens on

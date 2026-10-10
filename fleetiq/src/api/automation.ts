@@ -8,6 +8,7 @@ import { mintToken, publicToken } from "../lib/tokens";
 import { DeployError, deployFromSource, deploying } from "../services/deploy";
 import { fleetOf } from "../services/fleet";
 import { GithubError, commitStatus, ensureWebhook } from "../services/github";
+import { startUpdate, updateStatus, versionInfo } from "../services/update";
 import { SourceError, fetchSource, validRepo, verifyGithubSignature } from "../services/source";
 import { failure, requireApp } from "./util";
 
@@ -165,6 +166,21 @@ export function automationRoutes(api: Hono) {
     return c.json(await waitFor(d.id, Math.min(Number(c.req.query("timeout") ?? 60), 240) * 1000));
   });
 
+  // ---- Platform updates (one click: pull the latest stack from GitHub and re-run the installer) ----
+  api.get("/api/platform/version", async (c) => c.json(await versionInfo()));
+  api.get("/api/platform/update", async (c) => { try { return c.json(await updateStatus()); } catch (e) { return failure(c, e); } });
+  api.post("/api/platform/update", async (c) => {
+    const b = z.object({ ref: z.string().trim().max(200).optional() }).parse(await c.req.json().catch(() => ({})));
+    try {
+      const r = await startUpdate(b.ref, actorOf(c));
+      repo.writeAudit({ actor: actorOf(c), action: "platform.update", target: `${r.sha.slice(0, 7)}`, outcome: "ok", detail: r.message.slice(0, 200) });
+      return c.json(r, 202);
+    } catch (e) {
+      repo.writeAudit({ actor: actorOf(c), action: "platform.update", target: b.ref ?? "latest", outcome: "failed", detail: String((e as Error).message).slice(0, 200) });
+      return failure(c, e);
+    }
+  });
+
   // ---- Everything at a glance, for scripts and assistants ----
   api.get("/api/system", async (c) => {
     const containers = await listContainers().catch(() => []);
@@ -173,7 +189,7 @@ export function automationRoutes(api: Hono) {
       return { name: a.name, managed: !!a.managed, desiredNodes: a.desiredNodes, liveNodes: f?.live ?? 0, version: f?.version ?? null, deploying: deploying(a.name), source: repo.getSource(a.name)?.repo ?? null, routes: repo.listRoutes().filter((r) => r.app === a.name).map((r) => r.host) };
     }));
     return c.json({
-      fleetiq: { build: process.env.BUILD_SHA ?? "dev", consoleUrl: consoleUrl(c), authMode: config.authMode },
+      fleetiq: { build: process.env.BUILD_SHA ?? "dev", version: config.stackVersion || null, consoleUrl: consoleUrl(c), authMode: config.authMode },
       bucket: { url: config.bucket, endpoint: config.s3Endpoint || "aws" },
       edge: { url: config.edgeUrl || null }, builder: { image: config.builderImage, memoryMb: config.builderMemoryMb, timeoutMin: config.buildTimeoutMs / 60_000, githubToken: !!config.githubToken },
       nodeImage: config.nodeImage, apps, containers: containers.map((x) => ({ name: x.name, state: x.state, app: x.app ?? x.project })),

@@ -11,6 +11,7 @@ const hops = ["Edge", "Tunnel", "Load balancer", "Nodes", "Bucket"];
     <div class="actions"><button class="btn" type="button" id="refresh">Check again</button></div>
   </header>
 
+  <div id="update-note"></div>
   <section class="panel" aria-label="Request path">
     <div class="path" id="path">
       {hops.map((h) => (
@@ -66,6 +67,9 @@ const hops = ["Edge", "Tunnel", "Load balancer", "Nodes", "Bucket"];
       }</tbody></table>` : `<div class="empty">Nothing has happened yet. Deploys, rollbacks and data changes show up here.</div>`;
     } catch (e) { errorPanel(path, e, load); }
   }
+  api<any>("/api/platform/version").then((v) => {
+    if (v.behind) $("#update-note").innerHTML = `<div class="notice info" style="margin-bottom:18px">A platform update is available: ${v.behind} new commit${v.behind === 1 ? "" : "s"} on <code>${esc(v.ref)}</code>. <a href="/system">Review and update</a></div>`;
+  }).catch(() => {});
   $("#refresh").addEventListener("click", load);
   load();
   setInterval(() => { if (!document.hidden) load(); }, 15000);
