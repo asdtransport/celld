@@ -1,0 +1,161 @@
+# CellIQ on celld — a two-node fleet behind a load balancer, with an optional Cloudflare Tunnel.
+#
+#   cp deploy/celld/.env.example deploy/celld/.env    # fill in bucket + credentials
+#   docker compose -f deploy/celld/compose.yml up -d --build
+#   docker compose -f deploy/celld/compose.yml --profile local-s3 up -d --build   # bundled SeaweedFS bucket
+#   docker compose -f deploy/celld/compose.yml --profile tunnel up -d            # + cloudflared -> Cloudflare Access
+#   docker compose -f deploy/celld/compose.yml --profile oss-tunnel up -d        # + frpc -> open-source edge (deploy/oss)
+#   docker compose -f deploy/celld/compose.yml --profile console up -d           # + FleetIQ control plane
+#
+# Port 8080 (lb) is the only public port. 8788 (peer/operator) stays on the private `fleet` network.
+
+name: celliq
+
+x-node: &node
+  image: ${CELLIQ_IMAGE:-celliq-celld:latest}
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+    args:
+      BUILD_SHA: ${BUILD_SHA:-dev}
+  restart: unless-stopped
+  env_file: .env
+  environment: &node-env
+    CELLD_ADDR: 0.0.0.0:8787
+    CELLD_INTERNAL_ADDR: 0.0.0.0:8788
+  networks: [fleet]
+  depends_on:
+    deploy:
+      condition: service_completed_successfully
+
+services:
+  # One-shot: publish the bundle (Worker + DO + static assets + vars) to the fleet bucket.
+  # Nodes pick up a new version at their next pointer poll — no restart needed.
+  deploy:
+    image: ${CELLIQ_IMAGE:-celliq-celld:latest}
+    build: { context: ../.., dockerfile: Dockerfile }
+    command: ["deploy"]
+    env_file: .env
+    networks: [fleet]
+    restart: "no"
+
+  node-a:
+    <<: *node
+    hostname: node-a
+    environment:
+      <<: *node-env
+      CELLD_ADVERTISE: node-a:8788
+      CELLD_D1_MIGRATE: "1"          # exactly one node applies D1 migrations
+    volumes: [node-a:/var/lib/celld]
+
+  node-b:
+    <<: *node
+    hostname: node-b
+    environment:
+      <<: *node-env
+      CELLD_ADVERTISE: node-b:8788
+    volumes: [node-b:/var/lib/celld]
+
+  # Any node can serve any request (it routes cell calls to the owner), so plain round-robin is fine.
+  lb:
+    image: ${LB_IMAGE:-caddy:2}
+    restart: unless-stopped
+    configs: [{ source: lbcfg, target: /etc/caddy/Caddyfile }]
+    volumes: [lb-admin:/run/caddy-admin]   # admin socket, shared only with FleetIQ
+    ports: ["${CELLIQ_PORT:-8080}:8080"]
+    networks: [fleet]
+    depends_on: [node-a, node-b]
+
+  # Cloudflare Tunnel -> lb. Put a Cloudflare Access app on the tunnel hostname and set
+  # APP_AUTH_MODE=access + APP_ACCESS_AUD; the Worker verifies the Cf-Access-Jwt-Assertion header.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: [tunnel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    networks: [fleet]
+    depends_on: [lb]
+
+  # Open-source tunnel: frpc dials OUT to the edge's frps (deploy/oss) — no port forwarding at the site.
+  frpc:
+    image: ${FRP_IMAGE:-celliq-frp:latest}
+    build: { context: ../oss, dockerfile: Dockerfile.frp }
+    profiles: [oss-tunnel]
+    restart: unless-stopped
+    command: ["frpc", "-c", "/etc/frp/frpc.toml"]
+    env_file: .env
+    volumes: ["../oss/site/frpc.toml:/etc/frp/frpc.toml:ro", "frpc-store:/var/lib/frp"]
+    networks: [fleet]
+    depends_on: [lb]
+
+  # FleetIQ — control plane: deploy, scale, routes, tunnels, data. Reached through the edge only.
+  fleetiq:
+    image: ${FLEETIQ_IMAGE:-fleetiq:latest}
+    profiles: [console]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FLEET_BUCKET: ${FLEET_BUCKET:-s3://celliq-fleet}
+      FLEET_NETWORK: celliq_fleet
+      STACK_PROJECTS: celliq,celliq-edge
+      DEFAULT_APP: celliq                 # adopt this stack's app on first run (route * keeps working)
+      LB_ADMIN_SOCK: /run/caddy-admin/admin.sock
+      FRPC_API: ${FRPC_API:-}             # http://frpc:7400 with the oss-tunnel profile
+      AUTH_MODE: ${FLEETIQ_AUTH_MODE:-edge}
+      AUTH_PUBLIC_KEY_B64: ${APP_AUTH_PUBLIC_KEY_B64:-}
+    volumes:
+      - fleetiq-data:/data
+      - lb-admin:/run/caddy-admin
+      - /var/run/docker.sock:/var/run/docker.sock   # runs managed nodes; treat FleetIQ as host-admin
+    networks: [fleet]
+    depends_on: [lb]
+
+  # Local S3-compatible bucket (supports the conditional writes celld needs). Dev/test only.
+  s3:
+    image: ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.48}   # 4.48 verified: honors If-Match / If-None-Match
+    profiles: [local-s3]
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -volume.port=18080 -volume.max=200 -master.volumeSizeLimitMB=64
+    configs: [{ source: s3cfg, target: /etc/seaweedfs/s3.json }]
+    volumes: [s3-data:/data]
+    networks: [fleet]
+  s3-init:
+    image: ${AWSCLI_IMAGE:-amazon/aws-cli:2.27.0}
+    profiles: [local-s3]
+    depends_on: [s3]
+    env_file: .env
+    entrypoint: ["sh", "-c", "b=$${FLEET_BUCKET:-$$CELLD_BUCKET}; b=$${b#s3://}; b=$${b%%/*}; until aws --endpoint-url $$S3_ENDPOINT s3 ls >/dev/null 2>&1; do sleep 1; done; aws --endpoint-url $$S3_ENDPOINT s3 mb s3://$$b || true; aws --endpoint-url $$S3_ENDPOINT s3 ls s3://$$b >/dev/null && echo bucket $$b ready"]
+    networks: [fleet]
+
+configs:
+  lbcfg:
+    content: |
+      {
+        # Bootstrap config. Once FleetIQ has routes it replaces this through the admin socket.
+        admin unix//run/caddy-admin/admin.sock
+        auto_https off
+      }
+      :8080 {
+        reverse_proxy node-a:8787 node-b:8787 {
+          lb_policy round_robin
+          lb_try_duration 5s
+          health_uri /api/health
+          health_interval 5s
+          fail_duration 10s
+        }
+      }
+  s3cfg:
+    content: |
+      {"identities":[{"name":"celld","credentials":[{"accessKey":"${AWS_ACCESS_KEY_ID}","secretKey":"${AWS_SECRET_ACCESS_KEY}"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+
+networks:
+  fleet: {}
+
+volumes:
+  lb-admin: {}
+  frpc-store: {}
+  fleetiq-data: {}
+  node-a: {}
+  node-b: {}
+  s3-data: {}

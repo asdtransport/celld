@@ -1,0 +1,4 @@
+---
+const { crumbs = [] } = Astro.props;
+---
+<div class="crumbs">{crumbs.map((c, i) => (<>{i > 0 && <span class="sep">/</span>}{c.href ? <a href={c.href}>{c.label}</a> : <span>{c.label}</span>}</>))}</div>

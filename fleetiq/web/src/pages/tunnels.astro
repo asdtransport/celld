@@ -1,0 +1,71 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Tunnels" active="tunnels">
+  <header class="page-head">
+    <div>
+      <h1>Tunnels</h1>
+      <p>Outbound connections from this site to the edge. Nothing at the site accepts inbound traffic; the edge reaches the load balancer through these.</p>
+    </div>
+    <div class="actions"><button class="btn primary" type="button" data-drawer-open="tunnel" data-operator>Add tunnel</button></div>
+  </header>
+  <section class="panel">
+    <div class="panel-head"><h2>This site</h2><span class="hint">frpc</span></div>
+    <div class="table-wrap" id="client"><div class="empty skeleton">Asking frpc</div></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Edge</h2><span class="hint">frps</span></div>
+    <div id="server"><div class="empty skeleton">Asking frps</div></div>
+  </section>
+
+  <Drawer id="tunnel" title="Add tunnel" submit="Add tunnel" formId="tunnel-form">
+    <form id="tunnel-form">
+      <label class="field"><span>Name</span><input type="text" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,40}" spellcheck="false" placeholder="board-direct" /></label>
+      <label class="field"><span>Local address</span><input type="text" name="localHost" required value="lb" spellcheck="false" />
+        <small>A host on the fleet network. The load balancer already routes every application by hostname, so most sites need only one tunnel to it.</small></label>
+      <label class="field"><span>Local port</span><input type="number" name="localPort" min="1" max="65535" value="8080" required /></label>
+      <label class="field"><span>Edge port</span><input type="number" name="remotePort" min="6000" max="6009" value="6001" required />
+        <small>The edge only allows ports 6000–6009, and they stay private to the edge; Caddy forwards to them.</small></label>
+    </form>
+  </Drawer>
+</Console>
+<script>
+  import { $, act, api, bytes, confirmAction, errorPanel, esc, gateOperatorControls } from "../lib/api";
+  async function load() {
+    try {
+      const t = await api<any>("/api/tunnels");
+      const c = t.client;
+      $("#client").innerHTML = c === null ? `<div class="empty"><strong>frpc isn’t connected to FleetIQ</strong>Set <code>FRPC_API</code> and the frpc admin credentials to manage tunnels from here.</div>`
+        : c.error ? `<div class="empty"><strong>frpc didn’t answer</strong>${esc(c.error)}</div>`
+        : c.length ? `<table class="data"><thead><tr><th>Tunnel</th><th>Status</th><th>From</th><th>To edge</th><th>Defined in</th><th></th></tr></thead><tbody>${
+          c.map((p: any) => `<tr><td><strong>${esc(p.name)}</strong></td>
+            <td><span class="status ${p.status === "running" ? "ok" : p.status === "wait start" ? "warn" : "bad"}">${esc(p.status)}</span>${p.err ? `<span class="sub" style="color:var(--bad)">${esc(p.err)}</span>` : ""}</td>
+            <td><code>${esc(p.local_addr)}</code></td><td><code>${esc(p.remote_addr || "—")}</code></td>
+            <td>${p.source === "store" ? `<span class="tag teal">FleetIQ</span>` : `<span class="tag">frpc.toml</span>`}</td>
+            <td class="row-actions">${p.source === "store" ? `<button class="btn sm danger" type="button" data-operator data-del="${esc(p.name)}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No tunnels. Add one to reach the load balancer from the edge.</div>`;
+      $("#client").querySelectorAll<HTMLButtonElement>("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+        if (!(await confirmAction({ title: `Remove tunnel ${b.dataset.del}?`, text: "The edge loses this path to the site immediately.", ok: "Remove tunnel", typed: b.dataset.del }))) return;
+        if (await act(b, () => api(`/api/tunnels/${encodeURIComponent(b.dataset.del!)}`, { method: "DELETE" }), "Tunnel removed")) load();
+      }));
+      gateOperatorControls($("#client"));
+      const s = t.server;
+      $("#server").innerHTML = s === null ? `<div class="empty">FleetIQ can’t see the edge’s frps from here. Set <code>FRPS_API</code> if the edge dashboard is reachable over a private network.</div>`
+        : s.error ? `<div class="empty"><strong>frps didn’t answer</strong>${esc(s.error)}</div>`
+        : `<div class="panel-body"><dl class="kv"><dt>Version</dt><dd>${esc(s.version)}</dd><dt>Connected clients</dt><dd>${esc(s.clientCounts)}</dd>
+            <dt>Tunnels</dt><dd>${esc(Object.values(s.proxyTypeCount ?? {}).reduce((a: number, b: any) => a + Number(b), 0))}</dd>
+            <dt>Traffic today</dt><dd>${bytes(s.totalTrafficIn)} in, ${bytes(s.totalTrafficOut)} out</dd><dt>Connections now</dt><dd>${esc(s.curConns)}</dd></dl></div>
+          ${t.serverProxies?.proxies?.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Tunnel</th><th>Status</th><th class="num">Today in</th><th class="num">Today out</th></tr></thead><tbody>${
+            t.serverProxies.proxies.map((p: any) => `<tr><td>${esc(p.name)}</td><td><span class="status ${p.status === "online" ? "ok" : "bad"}">${esc(p.status)}</span></td><td class="num">${bytes(p.todayTrafficIn)}</td><td class="num">${bytes(p.todayTrafficOut)}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
+    } catch (e) { errorPanel($("#client"), e, load); }
+  }
+  $<HTMLFormElement>("#tunnel-form").addEventListener("submit", async (e) => {
+    e.preventDefault(); const f = new FormData(e.target as HTMLFormElement);
+    const body = { name: String(f.get("name")), localHost: String(f.get("localHost")), localPort: Number(f.get("localPort")), remotePort: Number(f.get("remotePort")) };
+    if (await act(document.querySelector('button[form="tunnel-form"]'), () => api("/api/tunnels", { method: "POST", json: body }), `Tunnel ${body.name} added`)) {
+      (document.getElementById("tunnel") as HTMLDialogElement).close(); setTimeout(load, 1500);
+    }
+  });
+  load(); setInterval(() => { if (!document.hidden && !document.querySelector("dialog[open]")) load(); }, 10000);
+</script>

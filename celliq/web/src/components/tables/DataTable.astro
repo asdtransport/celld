@@ -1,0 +1,13 @@
+---
+const { columns = [], rows = [], empty = "No data." } = Astro.props;
+---
+{rows.length === 0 ? (<div class="muted" style="padding:18px 4px;font-size:14px">{empty}</div>) : (
+  <table class="data-table">
+    <thead><tr>{columns.map((c) => <th class={c.align === "right" ? "right" : ""}>{c.label}</th>)}</tr></thead>
+    <tbody>{rows.map((row) => (<tr>{columns.map((c) => {
+      const v = row[c.key];
+      const href = c.href ? c.href.replace(":id", row.id ?? "") : null;
+      return (<td class={c.align === "right" ? "right" : ""}>{href ? <a href={href}>{v}</a> : v}</td>);
+    })}</tr>))}</tbody>
+  </table>
+)}

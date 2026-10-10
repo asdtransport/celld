@@ -1,0 +1,62 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Routes" active="routes">
+  <header class="page-head">
+    <div>
+      <h1>Routes</h1>
+      <p>Which application answers each hostname on the load balancer. FleetIQ writes the whole Caddy configuration from this list and keeps node addresses current.</p>
+    </div>
+    <div class="actions"><button class="btn primary" type="button" data-drawer-open="route" data-operator>Add route</button></div>
+  </header>
+  <div class="notice info" style="margin-bottom:18px">A public hostname also needs to reach the load balancer: point it at the edge, and add it to the edge’s Caddyfile if it isn’t covered by a wildcard.</div>
+  <section class="panel"><div class="table-wrap" id="routes"><div class="empty skeleton">Loading routes</div></div></section>
+  <section class="panel">
+    <div class="panel-head"><h2>Upstream health</h2><span class="hint">Live from the load balancer</span></div>
+    <div class="table-wrap" id="ups"><div class="empty skeleton">Asking Caddy</div></div>
+  </section>
+
+  <Drawer id="route" title="Add route" submit="Save route" formId="route-form">
+    <form id="route-form">
+      <label class="field"><span>Hostname</span><input type="text" name="host" required spellcheck="false" placeholder="board.example.com" />
+        <small>Use <code>*</code> for the route that answers any host without its own route.</small></label>
+      <label class="field"><span>Application</span><select name="app" id="route-app" required></select></label>
+    </form>
+  </Drawer>
+</Console>
+<script>
+  import { $, act, api, confirmAction, errorPanel, esc, gateOperatorControls } from "../lib/api";
+  async function load() {
+    try {
+      const r = await api<any>("/api/routes");
+      $("#routes").innerHTML = r.targets.length ? `<table class="data"><thead><tr><th>Hostname</th><th>Application</th><th>Nodes behind it</th><th>Health check</th><th></th></tr></thead><tbody>${
+        r.targets.map((t: any) => `<tr><td>${t.host === "*" ? `<strong>Any other host</strong><span class="sub">default route</span>` : `<code>${esc(t.host)}</code>`}</td>
+          <td><a href="/app?name=${encodeURIComponent(t.app)}">${esc(t.app)}</a></td>
+          <td>${t.upstreams.length ? t.upstreams.map((u: string) => `<code>${esc(u)}</code>`).join("<br>") : `<span class="status bad">No running nodes</span><span class="sub">answers 503</span>`}</td>
+          <td><code>${esc(t.healthPath)}</code></td>
+          <td class="row-actions"><button class="btn sm danger" type="button" data-operator data-del="${esc(t.host)}">Remove</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty"><strong>No routes</strong>The load balancer still runs its bootstrap configuration until you add the first route.</div>`;
+      $("#routes").querySelectorAll<HTMLButtonElement>("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+        const h = b.dataset.del!;
+        if (!(await confirmAction({ title: `Remove the route for ${h === "*" ? "any other host" : h}?`, text: "Requests for this hostname get 404 from the load balancer.", ok: "Remove route" }))) return;
+        if (await act(b, () => api(`/api/routes?host=${encodeURIComponent(h)}`, { method: "DELETE" }), "Route removed")) load();
+      }));
+      gateOperatorControls($("#routes"));
+      const ups = r.upstreams;
+      $("#ups").innerHTML = ups.error ? `<div class="empty"><strong>The load balancer’s admin API didn’t answer</strong>${esc(ups.error)}</div>`
+        : ups.length ? `<table class="data"><thead><tr><th>Upstream</th><th class="num">Requests in flight</th><th class="num">Recent failures</th></tr></thead><tbody>${
+          ups.map((u: any) => `<tr><td><code>${esc(u.address)}</code></td><td class="num">${u.num_requests}</td><td class="num"><span class="status ${u.fails ? "bad" : "ok"}">${u.fails}</span></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No upstreams configured.</div>`;
+    } catch (e) { errorPanel($("#routes"), e, load); }
+  }
+  api<any[]>("/api/apps").then((apps) => { $("#route-app").innerHTML = apps.map((a) => `<option>${esc(a.name)}</option>`).join(""); });
+  $<HTMLFormElement>("#route-form").addEventListener("submit", async (e) => {
+    e.preventDefault(); const f = new FormData(e.target as HTMLFormElement);
+    const body = { host: String(f.get("host")).trim().toLowerCase(), app: String(f.get("app")) };
+    if (await act(document.querySelector('button[form="route-form"]'), () => api("/api/routes", { method: "PUT", json: body }), `${body.host === "*" ? "Default route" : body.host} now goes to ${body.app}`)) {
+      (document.getElementById("route") as HTMLDialogElement).close(); (e.target as HTMLFormElement).reset(); load();
+    }
+  });
+  load(); setInterval(() => { if (!document.hidden && !document.querySelector("dialog[open]")) load(); }, 10000);
+</script>

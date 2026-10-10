@@ -1,0 +1,9 @@
+node_modules
+local/*.db
+local/*.db-*
+local/.run.lock
+local/.server.pid
+local/server.log
+local/shots
+.wrangler
+dist

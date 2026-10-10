@@ -1,0 +1,94 @@
+# CellIQ edge — Caddy + caddy-security. Open-source replacement for Cloudflare Access + edge TLS.
+#
+#  /auth*                -> login portal (local users; add OIDC e.g. Entra, see Caddyfile.entra.example)
+#  /api/health, runtime  -> bypass, so uptime checks work without a session (like the Access bypass app)
+#  everything else       -> authorize (valid ES256 token + allowed role) -> upstream (frps tunnel or lb)
+#
+# The portal signs an ES256 JWT (celld's WebCrypto verifies only P-256/SHA-256 — ES512, the
+# plugin default, would fail in the Worker). The token travels upstream as a cookie
+# (AUTHP_ACCESS_TOKEN in caddy-security 1.4.x) or an Authorization: Bearer header, and the Worker verifies it again (defense in depth).
+{
+	{$CADDY_EXTRA_GLOBAL}
+	admin off
+	order authenticate before respond
+	order authorize before reverse_proxy
+
+	security {
+		local identity store localdb {
+			realm local
+			path /data/caddy-security/users.json
+			user {$CELLIQ_ADMIN_USER:admin} {
+				name CellIQ Admin
+				email {$CELLIQ_ADMIN_EMAIL:admin@localhost}
+				password "{$CELLIQ_ADMIN_PASSWORD}" overwrite
+				roles authp/admin authp/user
+			}
+		}
+
+		authentication portal celliq_portal {
+			crypto default token lifetime {$TOKEN_LIFETIME:3600}
+			crypto key edge sign-verify from file /etc/caddy/jwt/sign.pem
+			enable identity store localdb
+			cookie insecure {$COOKIE_INSECURE:disabled}
+			ui {
+				links {
+					"CellIQ" "/" icon "las la-home"
+					"Who am I" "/auth/whoami" icon "las la-user"
+				}
+			}
+		}
+
+		# Console: same sign-in; FleetIQ itself decides viewer vs operator from the roles claim.
+		authorization policy fleetiq_policy {
+			set auth url /auth/
+			crypto key edge verify from file /etc/caddy/jwt/sign.pem
+			allow roles authp/admin authp/user
+			validate bearer header
+		}
+
+		authorization policy celliq_policy {
+			set auth url /auth/
+			crypto key edge verify from file /etc/caddy/jwt/sign.pem
+			allow roles authp/admin authp/user
+			validate bearer header
+			inject header "X-Auth-Email" from email
+			inject header "X-Auth-Subject" from sub
+		}
+	}
+}
+
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	route /auth* {
+		authenticate * with celliq_portal
+	}
+
+	@open path /api/health /api/runtime
+	route @open {
+		reverse_proxy {$UPSTREAM:frps:6000}
+	}
+
+	route {
+		authorize with celliq_policy
+		reverse_proxy {$UPSTREAM:frps:6000} {
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+}
+
+# FleetIQ console on its own hostname. The same portal is mounted here, so the session cookie
+# belongs to this host and no cross-domain cookie is needed.
+{$CONSOLE_ADDRESS:console.localhost} {
+	encode zstd gzip
+	route /auth* {
+		authenticate * with celliq_portal
+	}
+	route /api/health {
+		reverse_proxy {$CONSOLE_UPSTREAM:frps:6001}
+	}
+	route {
+		authorize with fleetiq_policy
+		reverse_proxy {$CONSOLE_UPSTREAM:frps:6001}
+	}
+}

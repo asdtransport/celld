@@ -1,0 +1,229 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Application" active="apps">
+  <div class="crumbs"><a href="/apps">Applications</a></div>
+  <header class="page-head">
+    <div>
+      <h1 id="title">Application</h1>
+      <p id="subtitle" class="skeleton">Loading this application</p>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" id="diag-btn">Run diagnostics</button>
+      <button class="btn" type="button" data-drawer-open="scale" data-operator id="scale-btn" hidden>Scale nodes</button>
+      <button class="btn primary" type="button" data-drawer-open="deploy" data-operator>Deploy a version</button>
+    </div>
+  </header>
+
+  <div id="diag" hidden class="panel" style="margin-bottom:18px"></div>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Nodes</h2><span class="hint" id="nodes-hint"></span></div>
+    <div class="table-wrap" id="nodes"><div class="empty skeleton">Reading node leases</div></div>
+  </section>
+
+  <div class="grid-2" style="margin-top:18px">
+    <section class="panel">
+      <div class="panel-head"><h2>Versions</h2><span class="hint">Rolling back moves the live pointer and reloads every node.</span></div>
+      <div class="table-wrap" id="versions"><div class="empty skeleton">Listing versions</div></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Configuration</h2></div>
+      <div class="panel-body" id="summary"><div class="skeleton">Loading</div></div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Deployment history</h2></div>
+    <div class="table-wrap" id="history"><div class="empty skeleton">Loading history</div></div>
+  </section>
+
+  <section class="panel" style="margin-top:18px" data-operator>
+    <div class="panel-head"><h2>Remove application</h2></div>
+    <div class="panel-body" style="display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+      <p style="margin:0;color:var(--ink-2);max-width:70ch">Removes it from FleetIQ. Scale it to zero and remove its routes first. Its data stays in the bucket under its prefix.</p>
+      <button class="btn danger" type="button" id="remove-btn">Remove application</button>
+    </div>
+  </section>
+
+  <Drawer id="deploy" title="Deploy a version" submit="Upload and deploy" formId="deploy-form">
+    <form id="deploy-form">
+      <p style="margin:0 0 14px;color:var(--ink-2)">Upload the project as a <code>.tar.gz</code>: <code>wrangler.jsonc</code>, the Worker source with its <code>node_modules</code> (or a pre-built bundle), and built static assets. celld bundles it and stores a new version.</p>
+      <label class="field"><span>Project archive</span><input type="file" name="bundle" accept=".tgz,.tar.gz,application/gzip" required />
+        <small>Create one with <code>tar czf app.tgz -C my-app .</code></small></label>
+      <div class="notice info" id="deploy-name-note"></div>
+      <div id="deploy-result" style="margin-top:14px"></div>
+    </form>
+  </Drawer>
+
+  <Drawer id="scale" title="Scale nodes" submit="Apply" formId="scale-form">
+    <form id="scale-form">
+      <label class="field"><span>Nodes</span><input type="number" name="nodes" min="0" max="9" required />
+        <small>New nodes join through the bucket in a few seconds. Removed nodes hand their cells to the others before stopping.</small></label>
+      <div class="notice warn" id="scale-warn" hidden>One node waits on the bucket for every write, which is much slower. Two or more are recommended.</div>
+    </form>
+  </Drawer>
+
+  <Drawer id="log" title="Deployment log">
+    <div id="log-body"></div>
+  </Drawer>
+</Console>
+
+<script>
+  import { $, act, ago, api, bytes, confirmAction, errorPanel, esc, qs, short, statusClass, toast, when } from "../lib/api";
+  const name = qs("name") ?? "";
+  if (!name) location.replace("/apps");
+  let data: any = null;
+
+  async function load() {
+    try {
+      data = await api<any>(`/api/apps/${encodeURIComponent(name)}`);
+      const { app, fleet, bindings, routes } = data;
+      document.title = `${app.name} · FleetIQ`;
+      $("#title").textContent = app.name;
+      const sub = $("#subtitle"); sub.classList.remove("skeleton");
+      sub.textContent = fleet.version ? `Live version ${fleet.version}. ${app.description ?? ""}` : `Not deployed yet. ${app.description ?? "Upload a project to create the first version."}`;
+      $("#scale-btn").hidden = !app.managed;
+      (document.querySelector('#scale-form input[name="nodes"]') as HTMLInputElement).value = String(app.desiredNodes);
+      $("#deploy-name-note").innerHTML = `The project’s wrangler <code>name</code> must be <code>${esc(app.name)}</code>.`;
+      renderNodes(app, fleet);
+      renderSummary(app, fleet, bindings, routes);
+    } catch (e) { errorPanel($("#nodes"), e, load); }
+    loadVersions(); loadHistory();
+  }
+
+  function renderNodes(app: any, fleet: any) {
+    $("#nodes-hint").textContent = `${fleet.live} live${app.managed ? ` of ${app.desiredNodes} wanted` : ""}`;
+    if (!fleet.nodes.length) {
+      $("#nodes").innerHTML = `<div class="empty"><strong>No nodes have joined</strong>${app.managed ? "Scale this application up to start nodes." : "Start the nodes where they are defined; they appear here once they hold a lease in the bucket."}</div>`;
+      return;
+    }
+    $("#nodes").innerHTML = `<table class="data"><thead><tr><th>Node</th><th>Lease</th><th>Running</th><th>Cells</th><th class="num">Memory</th><th class="num">CPU</th></tr></thead><tbody>${
+      fleet.nodes.map((n: any) => {
+        const s = n.state && !n.state.error ? n.state : null;
+        const lag = s && fleet.version && s.version && s.version !== fleet.version;
+        return `<tr>
+          <td style="white-space:nowrap"><code>${esc(n.addr.split(":")[0])}</code><span class="sub">node ${esc(short(n.id.replace(/^node_/, ""), 10))}</span></td>
+          <td style="white-space:nowrap">${n.fresh ? `<span class="status ok">Held</span><span class="sub">renews in ${Math.max(0, Math.round(n.expiresInMs / 1000))} s</span>`
+            : -n.expiresInMs > 1e11 ? `<span class="status off">Left the fleet</span><span class="sub">shut down cleanly</span>`
+            : `<span class="status bad">Expired</span><span class="sub">${Math.round(-n.expiresInMs / 1000)} s ago</span>`}</td>
+          <td>${s ? `<code>${esc(short(s.version, 16))}</code>${lag ? `<span class="sub" style="color:var(--warn)">Switching to ${esc(short(fleet.version, 7))}</span>` : ""}` : n.state?.error ? `<span class="status bad">Unreachable</span><span class="sub">${esc(n.state.error)}</span>` : "—"}</td>
+          <td>${s ? `<div class="cells" title="${s.owned} owned, ${s.resident} in memory">${Array.from({ length: Math.min(s.owned, 60) }).map((_, i) => `<i class="${(s.cells[i] ?? "").startsWith("__") || (s.cells[i] ?? "").startsWith(".") ? "sys" : ""}"></i>`).join("")}</div><span class="sub" style="white-space:nowrap">${s.owned} owned</span>` : "—"}</td>
+          <td class="num">${s ? bytes(s.rssBytes) : "—"}${s?.pressured ? `<span class="sub" style="color:var(--bad)">Under pressure</span>` : ""}</td>
+          <td class="num">${s ? `${s.cpuPercent.toFixed(1)}%` : "—"}</td></tr>`;
+      }).join("")}</tbody></table>`;
+  }
+
+  function renderSummary(app: any, fleet: any, b: any, routes: any[]) {
+    const link = (kind: string, id: string, label: string) => `<a href="/data?app=${encodeURIComponent(app.name)}&kind=${kind}&id=${encodeURIComponent(id)}">${esc(label)}</a>`;
+    const list = (arr: string[]) => arr.length ? arr.join(", ") : `<span class="sub" style="display:inline">None</span>`;
+    $("#summary").innerHTML = `<dl class="kv">
+      <dt>Nodes run by</dt><dd>${app.managed ? `FleetIQ (image <code>${esc(app.nodeImage ?? "default")}</code>)` : "Outside FleetIQ"}</dd>
+      <dt>Bucket prefix</dt><dd><code>${esc(app.prefix)}/</code></dd>
+      <dt>Public hostnames</dt><dd>${routes.length ? routes.map((r) => `<code>${esc(r.host === "*" ? "Any other host" : r.host)}</code>`).join(", ") : `None. <a href="/routes">Add a route</a>`}</dd>
+      <dt>Health check</dt><dd><code>${esc(app.healthPath)}</code></dd>
+      <dt>Durable Objects</dt><dd>${list(b.durableObjects.map((d: any) => link("objects", d.className, d.className)))}</dd>
+      <dt>KV namespaces</dt><dd>${list(b.kv.map((k: any) => link("kv", k.id, `${k.binding} (${k.id})`)))}</dd>
+      <dt>D1 databases</dt><dd>${list(b.d1.map((d: any) => link("d1", d.name, `${d.binding} (${d.name})`)))}</dd>
+      <dt>Queues</dt><dd>${list(b.queues.map((q: any) => link("queues", q.queue, `${q.binding} (${q.queue})`)))}</dd>
+      <dt>R2 buckets</dt><dd>${list(b.r2.map((r: any) => link("r2", r.bucket, `${r.binding} (${r.bucket})`)))}</dd>
+      <dt>Schedules</dt><dd>${b.crons.length ? b.crons.map((c: string) => `<code>${esc(c)}</code>`).join(", ") : list([])}</dd>
+      <dt>Variables</dt><dd>${b.vars.length ? b.vars.map((v: any) => `<code>${esc(v.name)}</code>`).join(", ") : list([])}</dd>
+    </dl>`;
+  }
+
+  async function loadVersions() {
+    const el = $("#versions");
+    try {
+      const vs = await api<any[]>(`/api/apps/${encodeURIComponent(name)}/versions`);
+      el.innerHTML = vs.length ? `<table class="data"><thead><tr><th>Version</th><th>Uploaded</th><th></th></tr></thead><tbody>${
+        vs.map((v) => `<tr><td><code>${esc(v.version)}</code> ${v.current ? `<span class="tag teal">Live</span>` : ""}</td>
+          <td title="${esc(when(v.uploadedAt))}">${ago(v.uploadedAt)}</td>
+          <td class="row-actions">${v.current ? "" : `<button class="btn sm" type="button" data-operator data-rollback="${esc(v.version)}">Roll back to this</button>`}</td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No versions yet. Deploy a project to create the first one.</div>`;
+      el.querySelectorAll<HTMLButtonElement>("[data-rollback]").forEach((b) => b.addEventListener("click", () => rollback(b)));
+      const { gateOperatorControls } = await import("../lib/api"); gateOperatorControls(el);
+    } catch (e) { errorPanel(el, e, loadVersions); }
+  }
+
+  async function rollback(btn: HTMLButtonElement) {
+    const v = btn.dataset.rollback!;
+    if (!(await confirmAction({ title: `Roll ${name} back to ${v.slice(0, 7)}?`, text: "Live traffic moves to this version as each node picks it up. Durable Object data is not rolled back.", ok: "Roll back", typed: name }))) return;
+    let warning: string | null = null;
+    const ok = await act(btn, async () => { const d = await api<any>(`/api/apps/${encodeURIComponent(name)}/rollback`, { method: "POST", json: { version: v } }); warning = d.warning; }, `Rolled back to ${v.slice(0, 7)}`);
+    if (ok && warning) toast(`${warning}. See the deployment log.`, "bad");
+    if (ok) setTimeout(load, 400);
+  }
+
+  async function loadHistory() {
+    const el = $("#history");
+    try {
+      const ds = await api<any[]>(`/api/apps/${encodeURIComponent(name)}/deployments`);
+      el.innerHTML = ds.length ? `<table class="data"><thead><tr><th>Change</th><th>Result</th><th>When</th></tr></thead><tbody>${
+        ds.map((d) => {
+          const reason = d.status === "failed" ? String(d.log ?? "").trim().split("\n").pop() : "";
+          const what = d.status === "failed"
+            ? `${d.kind === "rollback" ? "Rollback" : "Deploy"} of ${esc(d.kind === "rollback" ? short(d.source) : d.source ?? "upload")} rejected`
+            : d.kind === "rollback" ? `Rolled back <code>${esc(short(d.previousVersion))}</code> to <code>${esc(short(d.version))}</code>`
+            : d.previousVersion ? `Deployed <code>${esc(short(d.version))}</code>, replacing <code>${esc(short(d.previousVersion))}</code>` : `Deployed <code>${esc(short(d.version))}</code>, the first version`;
+          return `<tr><td>${what}${reason ? `<span class="sub" style="color:var(--bad)">${esc(reason)}</span>` : ""}<span class="sub">by ${esc(d.actor)}${d.source && d.kind === "deploy" && d.status !== "failed" ? `, from ${esc(d.source)}` : ""}</span></td>
+          <td><span class="status ${statusClass(d.status)}">${d.status === "succeeded" ? "Succeeded" : d.status === "failed" ? "Failed" : "Running"}</span></td>
+          <td style="white-space:nowrap">${ago(d.startedAt)} <button class="btn sm" type="button" data-log="${esc(d.id)}">Log</button></td></tr>`; }).join("")}</tbody></table>`
+        : `<div class="empty">No deployments from FleetIQ yet. Versions deployed with the celld CLI still appear under Versions.</div>`;
+      el.querySelectorAll<HTMLButtonElement>("[data-log]").forEach((b) => b.addEventListener("click", async () => {
+        const d = await api<any>(`/api/deployments/${b.dataset.log}`);
+        $("#log-body").innerHTML = `<p style="margin:0 0 10px"><span class="status ${statusClass(d.status)}">${esc(d.status)}</span> ${esc(when(d.startedAt))}</p><pre class="log">${esc(d.log || "No output")}</pre>`;
+        (document.getElementById("log") as HTMLDialogElement).showModal();
+      }));
+    } catch (e) { errorPanel(el, e, loadHistory); }
+  }
+
+  // ---- deploy ----
+  $<HTMLFormElement>("#deploy-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const form = ev.target as HTMLFormElement;
+    const btn = document.querySelector<HTMLButtonElement>('button[form="deploy-form"]');
+    const out = $("#deploy-result"); out.innerHTML = "";
+    const ok = await act(btn, async () => {
+      try {
+        const d = await api<any>(`/api/apps/${encodeURIComponent(name)}/deploy`, { method: "POST", body: new FormData(form) });
+        out.innerHTML = `<div class="notice ${d.warning ? "warn" : "info"}">Version <code>${esc(d.version)}</code> is live${d.warning ? `, but ${esc(d.warning)}. Open the log below for each node’s reason.` : d.nodes.length ? ` on ${d.nodes.length} node${d.nodes.length === 1 ? "" : "s"}.` : `. No node was running yet; nodes load it as they start.`}</div><pre class="log" style="margin-top:10px">${esc(d.log)}</pre>`;
+      } catch (e: any) { out.innerHTML = `<div class="notice bad">${esc(e.message)}</div>`; throw e; }
+    }, "Deployed");
+    if (ok) { form.reset(); load(); }
+  });
+
+  // ---- scale ----
+  const scaleInput = document.querySelector('#scale-form input[name="nodes"]') as HTMLInputElement;
+  scaleInput.addEventListener("input", () => { $("#scale-warn").hidden = Number(scaleInput.value) !== 1; });
+  $<HTMLFormElement>("#scale-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const n = Number(scaleInput.value);
+    if (data && n < data.app.desiredNodes && !(await confirmAction({ title: `Scale ${name} down to ${n}?`, text: n === 0 ? "Every node stops. The application stops serving until you scale it up again; its data stays in the bucket." : "Removed nodes hand their cells to the remaining ones, then stop.", ok: "Scale down", typed: n === 0 ? name : undefined }))) return;
+    const btn = document.querySelector<HTMLButtonElement>('button[form="scale-form"]');
+    if (await act(btn, () => api(`/api/apps/${encodeURIComponent(name)}/scale`, { method: "POST", json: { nodes: n } }), `${name} scaled to ${n} node${n === 1 ? "" : "s"}`)) {
+      (document.getElementById("scale") as HTMLDialogElement).close();
+      setTimeout(load, 2500);
+    }
+  });
+
+  // ---- diagnostics ----
+  $("#diag-btn").addEventListener("click", async () => {
+    const panel = $("#diag"); panel.hidden = false;
+    panel.innerHTML = `<div class="panel-head"><h2>Diagnostics</h2><span class="hint">Signed probes of every node and a bucket check</span></div><div class="empty skeleton">Probing</div>`;
+    try {
+      const checks = await api<any[]>(`/api/apps/${encodeURIComponent(name)}/diagnose`);
+      panel.innerHTML = `<div class="panel-head"><h2>Diagnostics</h2><span class="hint">${checks.filter((c) => c.verdict === "ok").length} of ${checks.length} checks passed</span></div><div class="table-wrap"><table class="data"><tbody>${
+        checks.map((c) => `<tr><td style="width:34%"><span class="status ${c.verdict === "ok" ? "ok" : c.verdict === "warn" ? "warn" : "bad"}">${esc(c.check)}</span></td><td><span class="sub" style="color:var(--ink-2)">${esc(c.detail || "")}</span></td></tr>`).join("")}</tbody></table></div>`;
+    } catch (e) { errorPanel(panel, e); }
+  });
+
+  $("#remove-btn").addEventListener("click", async (ev) => {
+    if (!(await confirmAction({ title: `Remove ${name} from FleetIQ?`, text: "The registry entry goes away. Bucket data and versions are kept.", ok: "Remove", typed: name }))) return;
+    if (await act(ev.currentTarget as HTMLButtonElement, () => api(`/api/apps/${encodeURIComponent(name)}`, { method: "DELETE" }), `Removed ${name}`)) location.href = "/apps";
+  });
+
+  load();
+  setInterval(() => { if (!document.hidden && !document.querySelector("dialog[open]") && data) api<any>(`/api/apps/${encodeURIComponent(name)}`).then((d) => { data = d; renderNodes(d.app, d.fleet); }).catch(() => {}); }, 10000);
+</script>

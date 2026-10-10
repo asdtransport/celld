@@ -1,0 +1,224 @@
+---
+import Console from "../layouts/Console.astro";
+---
+<Console title="Data explorer" active="data">
+  <header class="page-head">
+    <div>
+      <h1>Data explorer</h1>
+      <p>Read and change an application’s storage through the fleet, so the node that owns each resource applies the change.</p>
+    </div>
+    <div class="actions">
+      <label class="sr-only" for="app-select">Application</label>
+      <select id="app-select" style="min-width:220px"></select>
+    </div>
+  </header>
+
+  <div class="grid-2" style="grid-template-columns:minmax(0,260px) minmax(0,1fr)">
+    <nav class="panel" aria-label="Resources"><div id="resources" class="panel-body"><div class="skeleton">Loading resources</div></div></nav>
+    <section class="panel" id="pane"><div class="empty">Pick a resource on the left.</div></section>
+  </div>
+</Console>
+
+<script>
+  import { $, act, ago, api, bytes, confirmAction, errorPanel, esc, gateOperatorControls, qs, short } from "../lib/api";
+
+  const params = new URLSearchParams(location.search);
+  let app = qs("app") ?? "";
+  let kind = qs("kind") ?? "";
+  let id = qs("id") ?? "";
+  const pane = $("#pane");
+
+  function go(k: string, i: string) {
+    kind = k; id = i;
+    params.set("app", app); params.set("kind", k); params.set("id", i);
+    history.replaceState(null, "", `?${params}`);
+    document.querySelectorAll("#resources a").forEach((a) => a.setAttribute("aria-current", (a as HTMLElement).dataset.key === `${k}:${i}` ? "page" : "false"));
+    render();
+  }
+
+  async function init() {
+    const apps = await api<any[]>("/api/apps").catch(() => []);
+    const sel = $<HTMLSelectElement>("#app-select");
+    sel.innerHTML = apps.map((a) => `<option value="${esc(a.name)}">${esc(a.name)}</option>`).join("") || `<option value="">No applications</option>`;
+    if (!app && apps[0]) app = apps[0].name;
+    sel.value = app;
+    sel.addEventListener("change", () => { app = sel.value; kind = ""; id = ""; loadResources(); });
+    loadResources();
+  }
+
+  async function loadResources() {
+    const el = $("#resources");
+    if (!app) { el.innerHTML = `<p style="margin:0;color:var(--ink-2)">Create an application first.</p>`; return; }
+    try {
+      const d = await api<any>(`/api/apps/${encodeURIComponent(app)}`);
+      const b = d.bindings;
+      const group = (title: string, k: string, items: { id: string; label: string; sub?: string }[]) => items.length ? `
+        <div style="margin-bottom:16px"><div style="font-size:12.5px;font-weight:600;color:var(--ink-3);margin-bottom:4px">${title}</div>
+        ${items.map((i) => `<a href="#" class="res-link" data-key="${k}:${esc(i.id)}" data-kind="${k}" data-id="${esc(i.id)}">${esc(i.label)}${i.sub ? `<span class="sub">${esc(i.sub)}</span>` : ""}</a>`).join("")}</div>` : "";
+      el.innerHTML = [
+        group("Durable Objects", "objects", b.durableObjects.map((x: any) => ({ id: x.className, label: x.className, sub: `binding ${x.binding}` }))),
+        group("KV namespaces", "kv", b.kv.map((x: any) => ({ id: x.id, label: x.id, sub: `binding ${x.binding}` }))),
+        group("D1 databases", "d1", b.d1.map((x: any) => ({ id: x.name, label: x.name, sub: `binding ${x.binding}` }))),
+        group("Queues", "queues", b.queues.map((x: any) => ({ id: x.queue, label: x.queue, sub: b.consumers.includes(x.queue) ? "consumed by this app" : `binding ${x.binding}` }))),
+        group("R2 buckets", "r2", b.r2.map((x: any) => ({ id: x.bucket, label: x.bucket, sub: `binding ${x.binding}` }))),
+      ].join("") || `<p style="margin:0;color:var(--ink-2)">${d.fleet.version ? "This version declares no storage bindings." : "Deploy a version first; its bindings appear here."}</p>`;
+      el.querySelectorAll<HTMLAnchorElement>(".res-link").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); go(a.dataset.kind!, a.dataset.id!); }));
+      const first = el.querySelector<HTMLAnchorElement>(".res-link");
+      if (kind && id) go(kind, id); else if (first) go(first.dataset.kind!, first.dataset.id!); else pane.innerHTML = `<div class="empty">Nothing to explore yet.</div>`;
+    } catch (e) { errorPanel(el, e, loadResources); }
+  }
+
+  const base = () => `/api/apps/${encodeURIComponent(app)}`;
+  function render() {
+    pane.innerHTML = `<div class="empty skeleton">Loading ${esc(id)}</div>`;
+    ({ kv: renderKv, d1: renderD1, queues: renderQueue, r2: renderR2, objects: renderObjects } as Record<string, () => void>)[kind]?.();
+  }
+
+  // ---------- KV ----------
+  async function renderKv(after?: string) {
+    try {
+      const r = await api<any>(`${base()}/kv/${encodeURIComponent(id)}${after ? `?after=${encodeURIComponent(after)}` : ""}`);
+      pane.innerHTML = `
+        <div class="panel-head"><h2>${esc(id)}</h2><span class="hint">${(() => { const n = r.info?.keys ?? r.keys.length; return `${n} key${n === 1 ? "" : "s"}${r.info ? `, ${bytes(r.info.bytes)}` : ""}`; })()}</span></div>
+        <div class="toolbar"><input type="search" id="kv-filter" placeholder="Filter keys on this page" aria-label="Filter keys" />
+          <button class="btn sm" type="button" id="kv-new" data-operator>Add key</button></div>
+        <div class="grid-2" style="grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:0">
+          <div class="table-wrap" style="border-right:1px solid var(--rule-soft);max-height:520px;overflow:auto"><table class="data"><tbody id="kv-keys">${
+            r.keys.map((k: any) => `<tr><td><a href="#" data-key="${esc(k.name)}" style="text-decoration:none"><code>${esc(k.name)}</code></a>${k.expiration ? `<span class="sub">expires ${esc(new Date(k.expiration * 1000).toLocaleString())}</span>` : ""}</td></tr>`).join("") ||
+            `<tr><td class="empty">This namespace is empty.</td></tr>`}</tbody></table>
+            ${r.next ? `<div style="padding:10px 14px"><button class="btn sm" type="button" id="kv-more">Next page</button></div>` : ""}</div>
+          <div class="panel-body" id="kv-editor"><p style="margin:0;color:var(--ink-2)">Select a key to see its value.</p></div>
+        </div>`;
+      $("#kv-filter").addEventListener("input", (e) => {
+        const q = (e.target as HTMLInputElement).value.toLowerCase();
+        pane.querySelectorAll<HTMLTableRowElement>("#kv-keys tr").forEach((tr) => { tr.hidden = !!q && !tr.textContent!.toLowerCase().includes(q); });
+      });
+      pane.querySelectorAll<HTMLAnchorElement>("[data-key]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openKey(a.dataset.key!); }));
+      $("#kv-new").addEventListener("click", () => editor("", "", true));
+      document.getElementById("kv-more")?.addEventListener("click", () => renderKv(r.next));
+      gateOperatorControls(pane);
+    } catch (e) { errorPanel(pane, e, () => renderKv()); }
+  }
+  async function openKey(key: string) {
+    $("#kv-editor").innerHTML = `<div class="skeleton">Reading ${esc(key)}</div>`;
+    try { const r = await api<any>(`${base()}/kv/${encodeURIComponent(id)}/value?key=${encodeURIComponent(key)}`); editor(key, r.value, false); }
+    catch (e) { errorPanel($("#kv-editor"), e); }
+  }
+  function editor(key: string, value: string, isNew: boolean) {
+    let pretty = value; try { pretty = JSON.stringify(JSON.parse(value), null, 2); } catch {}
+    $("#kv-editor").innerHTML = `<form id="kv-form">
+      <label class="field"><span>Key</span><input type="text" name="key" value="${esc(key)}" ${isNew ? "" : "readonly"} required spellcheck="false" /></label>
+      <label class="field"><span>Value</span><textarea name="value" rows="10" spellcheck="false">${esc(pretty)}</textarea><small>${bytes(new TextEncoder().encode(value).length)} stored. JSON is shown formatted and saved as you type it.</small></label>
+      <div class="actions" data-operator><button class="btn primary" type="submit">${isNew ? "Add key" : "Save value"}</button>${isNew ? "" : `<button class="btn danger" type="button" id="kv-del">Delete key</button>`}</div></form>`;
+    const f = $<HTMLFormElement>("#kv-form");
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault(); const d = new FormData(f); const k = String(d.get("key"));
+      if (await act(f.querySelector("button[type=submit]"), () => api(`${base()}/kv/${encodeURIComponent(id)}/value`, { method: "PUT", json: { key: k, value: String(d.get("value")) } }), `Saved ${k}`)) { if (isNew) renderKv(); }
+    });
+    document.getElementById("kv-del")?.addEventListener("click", async (e) => {
+      if (!(await confirmAction({ title: `Delete ${key}?`, text: "Workers reading this key get null from now on.", ok: "Delete key" }))) return;
+      if (await act(e.currentTarget as HTMLButtonElement, () => api(`${base()}/kv/${encodeURIComponent(id)}/value?key=${encodeURIComponent(key)}`, { method: "DELETE" }), `Deleted ${key}`)) renderKv();
+    });
+    gateOperatorControls(pane);
+  }
+
+  // ---------- D1 ----------
+  function renderD1() {
+    pane.innerHTML = `
+      <div class="panel-head"><h2>${esc(id)}</h2><span class="hint">SQLite on the node that owns this database</span></div>
+      <div class="panel-body">
+        <form id="sql-form">
+          <label class="field"><span>SQL</span><textarea name="sql" rows="6" spellcheck="false">SELECT name, type FROM sqlite_master WHERE name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name;</textarea>
+            <small>One statement per run. Statements run as written — writes included.</small></label>
+          <div class="actions" data-operator><button class="btn primary" type="submit">Run statement</button>
+            <button class="btn" type="button" id="mig-list">Show migrations</button><button class="btn" type="button" id="mig-apply">Apply pending migrations</button></div>
+          <p data-viewer-note hidden style="color:var(--ink-2)">Running SQL needs the operator role.</p>
+        </form>
+        <div id="sql-out" style="margin-top:16px"></div>
+      </div>`;
+    const f = $<HTMLFormElement>("#sql-form");
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault(); const sql = String(new FormData(f).get("sql"));
+      if (/^\s*(drop|delete|update|alter)\b/i.test(sql) && !(await confirmAction({ title: "Run a statement that changes data?", text: sql.slice(0, 200), ok: "Run it" }))) return;
+      const out = $("#sql-out"); out.innerHTML = `<div class="skeleton">Running</div>`;
+      try {
+        const r = await api<any>(`${base()}/d1/${encodeURIComponent(id)}/query`, { method: "POST", json: { sql } });
+        const cols = [...new Set(r.rows.flatMap((x: any) => Object.keys(x)))] as string[];
+        out.innerHTML = `<p style="margin:0 0 8px;color:var(--ink-2)">${esc(r.message || "Done")}, ${r.rows.length} row${r.rows.length === 1 ? "" : "s"} in ${r.ms} ms</p>` + (cols.length ? `<div class="table-wrap panel" style="max-height:420px;overflow:auto"><table class="data"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${
+          r.rows.map((row: any) => `<tr>${cols.map((c) => `<td>${row[c] === null ? `<span class="sub" style="display:inline">null</span>` : `<code>${esc(typeof row[c] === "object" ? JSON.stringify(row[c]) : row[c])}</code>`}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : "");
+      } catch (err: any) { out.innerHTML = `<div class="notice bad">${esc(err.message)}</div>`; }
+    });
+    const mig = async (apply: boolean, btn: HTMLButtonElement) => {
+      if (apply && !(await confirmAction({ title: `Apply pending migrations to ${id}?`, text: "Uses the migrations folder of the last project deployed from FleetIQ.", ok: "Apply migrations" }))) return;
+      const out = $("#sql-out");
+      await act(btn, async () => { const r = await api<any>(`${base()}/d1/${encodeURIComponent(id)}/migrations`, apply ? { method: "POST" } : {}); out.innerHTML = `<pre class="log">${esc(r.output || "No output")}</pre>`; }, apply ? "Migrations applied" : "Migrations listed");
+    };
+    $("#mig-list").addEventListener("click", (e) => mig(false, e.currentTarget as HTMLButtonElement));
+    $("#mig-apply").addEventListener("click", (e) => mig(true, e.currentTarget as HTMLButtonElement));
+    gateOperatorControls(pane).then(() => { if (pane.querySelector<HTMLElement>("[data-operator]")?.hidden) pane.querySelector<HTMLElement>("[data-viewer-note]")!.hidden = false; });
+  }
+
+  // ---------- Queues ----------
+  async function renderQueue() {
+    try {
+      const r = await api<any>(`${base()}/queues/${encodeURIComponent(id)}`);
+      const i = r.info;
+      pane.innerHTML = `
+        <div class="panel-head"><h2>${esc(id)}</h2><span class="status ${i.paused ? "warn" : "ok"}">${i.paused ? "Delivery paused" : "Delivering"}</span></div>
+        <div class="panel-body">
+          <dl class="kv"><dt>Waiting messages</dt><dd>${i.backlogCount}</dd><dt>Waiting bytes</dt><dd>${bytes(i.backlogBytes)}</dd>
+            <dt>Oldest message</dt><dd>${i.oldestMessageTimestamp ? ago(i.oldestMessageTimestamp) : "None waiting"}</dd><dt>Stored</dt><dd>${i.stored}</dd></dl>
+          <div class="actions" style="margin-top:16px" data-operator>
+            <button class="btn" type="button" data-q="${i.paused ? "resume" : "pause"}">${i.paused ? "Resume delivery" : "Pause delivery"}</button>
+            <button class="btn" type="button" data-q="redrive">Retry dead letters</button>
+            <button class="btn danger" type="button" data-q="purge">Purge messages</button></div>
+        </div>
+        <div class="panel-head" style="border-top:1px solid var(--rule-soft)"><h2>Next messages</h2><span class="hint">Peeking does not consume them</span></div>
+        ${r.messages.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Message</th><th>Attempts</th><th>Sent</th></tr></thead><tbody>${
+          r.messages.map((m: any) => `<tr><td><code>${esc(short(JSON.stringify(m.body ?? m), 140))}</code></td><td class="num">${esc(m.attempts ?? "—")}</td><td>${ago(m.timestamp ?? null)}</td></tr>`).join("")}</tbody></table></div>`
+          : `<div class="empty">The queue is empty.</div>`}`;
+      pane.querySelectorAll<HTMLButtonElement>("[data-q]").forEach((b) => b.addEventListener("click", async () => {
+        const action = b.dataset.q!;
+        if (action === "purge" && !(await confirmAction({ title: `Purge ${id}?`, text: `Deletes ${i.backlogCount} waiting message${i.backlogCount === 1 ? "" : "s"}. This can’t be undone.`, ok: "Purge messages", typed: id }))) return;
+        if (await act(b, () => api(`${base()}/queues/${encodeURIComponent(id)}/${action}`, { method: "POST" }), { pause: "Delivery paused", resume: "Delivery resumed", purge: "Messages purged", redrive: "Dead letters sent back to the queue" }[action]!)) renderQueue();
+      }));
+      gateOperatorControls(pane);
+    } catch (e) { errorPanel(pane, e, renderQueue); }
+  }
+
+  // ---------- R2 ----------
+  async function renderR2() {
+    try {
+      const objs = await api<any[]>(`${base()}/r2/${encodeURIComponent(id)}`);
+      pane.innerHTML = `
+        <div class="panel-head"><h2>${esc(id)}</h2><span class="hint">${objs.length} object${objs.length === 1 ? "" : "s"}</span></div>
+        <form class="toolbar" id="r2-up" data-operator><input type="file" name="file" required aria-label="File" /><input type="text" name="key" placeholder="Key (defaults to the file name)" style="max-width:260px" /><button class="btn sm primary" type="submit">Upload</button></form>
+        ${objs.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Key</th><th class="num">Size</th><th>Uploaded</th><th></th></tr></thead><tbody>${
+          objs.map((o) => `<tr><td><code>${esc(o.key)}</code></td><td class="num">${bytes(o.size)}</td><td>${ago(o.uploaded ?? null)}</td><td class="row-actions"><button class="btn sm danger" type="button" data-operator data-del="${esc(o.key)}">Delete</button></td></tr>`).join("")}</tbody></table></div>`
+          : `<div class="empty">This bucket is empty.</div>`}`;
+      $<HTMLFormElement>("#r2-up").addEventListener("submit", async (e) => {
+        e.preventDefault(); const f = e.target as HTMLFormElement;
+        if (await act(f.querySelector("button"), () => api(`${base()}/r2/${encodeURIComponent(id)}`, { method: "POST", body: new FormData(f) }), "Uploaded")) renderR2();
+      });
+      pane.querySelectorAll<HTMLButtonElement>("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+        if (!(await confirmAction({ title: `Delete ${b.dataset.del}?`, text: "The object is removed from the bucket.", ok: "Delete object" }))) return;
+        if (await act(b, () => api(`${base()}/r2/${encodeURIComponent(id)}?key=${encodeURIComponent(b.dataset.del!)}`, { method: "DELETE" }), "Deleted")) renderR2();
+      }));
+      gateOperatorControls(pane);
+    } catch (e) { errorPanel(pane, e, renderR2); }
+  }
+
+  // ---------- Durable Objects ----------
+  async function renderObjects() {
+    try {
+      const cells = (await api<any[]>(`${base()}/cells`)).filter((c) => c.class === id);
+      pane.innerHTML = `
+        <div class="panel-head"><h2>${esc(id)}</h2><span class="hint">${cells.length} instance${cells.length === 1 ? "" : "s"} in the bucket</span></div>
+        <p style="margin:14px 18px 0;color:var(--ink-2)">An instance is listed once it has handled its first event. Its storage belongs to the Worker; read it through the application.</p>
+        ${cells.length ? `<div class="table-wrap" style="margin-top:10px"><table class="data"><thead><tr><th>Instance ID</th></tr></thead><tbody>${
+          cells.map((c) => `<tr><td><code>${esc(c.id)}</code></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No instances yet.</div>`}`;
+    } catch (e) { errorPanel(pane, e, renderObjects); }
+  }
+
+  init();
+</script>

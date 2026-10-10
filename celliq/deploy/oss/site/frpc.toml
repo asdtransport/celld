@@ -1,0 +1,38 @@
+# frpc — runs at the site, behind NAT. Dials OUT to the edge and carries the fleet's lb port back.
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+loginFailExit = false               # keep retrying if the edge is down, like cloudflared
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+transport.tls.enable = true
+transport.heartbeatInterval = 15
+transport.heartbeatTimeout = 45
+
+log.to = "console"
+log.level = "info"
+
+# Admin API for FleetIQ (fleet network only, password required).
+webServer.addr = "0.0.0.0"
+webServer.port = 7400
+webServer.user = "{{ .Envs.FRPC_USER }}"
+webServer.password = "{{ .Envs.FRPC_PASS }}"
+# Tunnels created from FleetIQ are kept here and survive restarts.
+store.path = "/var/lib/frp/store.json"
+
+[[proxies]]
+name = "celliq"
+type = "tcp"
+localIP = "{{ .Envs.FRP_LOCAL_HOST }}"
+localPort = {{ .Envs.FRP_LOCAL_PORT }}
+remotePort = 6000
+transport.useEncryption = true
+
+# FleetIQ console -> edge port 6001 (the edge's console site forwards here).
+[[proxies]]
+name = "fleetiq"
+type = "tcp"
+localIP = "fleetiq"
+localPort = 8790
+remotePort = 6001
+transport.useEncryption = true

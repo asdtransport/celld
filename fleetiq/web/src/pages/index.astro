@@ -1,0 +1,72 @@
+---
+import Console from "../layouts/Console.astro";
+const hops = ["Edge", "Tunnel", "Load balancer", "Nodes", "Bucket"];
+---
+<Console title="Overview" active="overview">
+  <header class="page-head">
+    <div>
+      <h1>Request path</h1>
+      <p>Every hop a request crosses to reach your applications, checked live. Fix the first hop that isn’t green.</p>
+    </div>
+    <div class="actions"><button class="btn" type="button" id="refresh">Check again</button></div>
+  </header>
+
+  <section class="panel" aria-label="Request path">
+    <div class="path" id="path">
+      {hops.map((h) => (
+        <div class="hop" data-status="off">
+          <span class="hop-line" aria-hidden="true"></span>
+          <span class="hop-node" aria-hidden="true"></span>
+          <h3>{h}</h3>
+          <div class="state skeleton">Checking</div>
+          <p class="skeleton">Measuring this hop</p>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <div class="grid-2" style="margin-top:18px">
+    <section class="panel">
+      <div class="panel-head"><h2>Applications</h2><a href="/apps" class="hint">All applications</a></div>
+      <div class="table-wrap" id="apps"><div class="empty skeleton">Loading applications</div></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Recent activity</h2><a href="/activity" class="hint">Full log</a></div>
+      <div class="table-wrap" id="activity"><div class="empty skeleton">Loading activity</div></div>
+    </section>
+  </div>
+</Console>
+
+<script>
+  import { $, auditLine, ago, api, errorPanel, esc, short, statusClass } from "../lib/api";
+  const words: Record<string, string> = { ok: "Healthy", degraded: "Degraded", down: "Down", off: "Not configured" };
+
+  async function load() {
+    const path = $("#path");
+    try {
+      const o = await api<any>("/api/overview");
+      path.innerHTML = o.hops.map((h: any) => `
+        <div class="hop" data-status="${esc(h.status)}">
+          <span class="hop-line" aria-hidden="true"></span><span class="hop-node" aria-hidden="true"></span>
+          <h3>${esc(h.label)}</h3>
+          <div class="state">${words[h.status] ?? esc(h.status)}${h.ms != null ? ` <span class="ms">${h.ms} ms</span>` : ""}</div>
+          <p>${esc(h.detail)}</p>
+        </div>`).join("");
+      path.dataset.loaded = "";
+
+      $("#apps").innerHTML = o.apps.length ? `<table class="data"><thead><tr><th>Application</th><th>Version</th><th class="num">Live nodes</th></tr></thead><tbody>${
+        o.apps.map((a: any) => `<tr><td class="main-cell"><a href="/app?name=${encodeURIComponent(a.app)}">${esc(a.app)}</a></td>
+          <td>${a.error ? `<span class="status bad">${esc(a.error)}</span>` : `<code>${esc(short(a.version, 16))}</code>`}</td>
+          <td class="num"><span class="status ${a.live === 0 ? "bad" : a.managed && a.live < a.desired ? "warn" : "ok"}">${a.managed ? `${a.live} of ${a.desired}` : `${a.live} live`}</span></td></tr>`).join("")
+      }</tbody></table>` : `<div class="empty"><strong>No applications yet</strong>Register one to deploy Workers onto this fleet. <a href="/apps">Create an application</a></div>`;
+
+      $("#activity").innerHTML = o.activity.length ? `<table class="data"><tbody>${
+        o.activity.map((e: any) => `<tr><td><span class="status ${statusClass(e.outcome === "ok" ? "ok" : e.outcome === "denied" ? "warn" : "bad")}">${esc(auditLine(e))}</span><span class="sub">by ${esc(e.actor)}${e.detail ? `: ${esc(e.detail)}` : ""}</span></td>
+          <td class="num" style="white-space:nowrap"><span class="sub">${ago(e.at)}</span></td></tr>`).join("")
+      }</tbody></table>` : `<div class="empty">Nothing has happened yet. Deploys, rollbacks and data changes show up here.</div>`;
+    } catch (e) { errorPanel(path, e, load); }
+  }
+  $("#refresh").addEventListener("click", load);
+  load();
+  setInterval(() => { if (!document.hidden) load(); }, 15000);
+</script>

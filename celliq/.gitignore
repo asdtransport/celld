@@ -1,0 +1,14 @@
+node_modules
+local/*.db
+local/*.db-*
+local/.run.lock
+local/.server.pid
+local/server.log
+local/shots
+.wrangler
+dist
+.celld
+.sandbox-ca
+deploy/celld/.env
+deploy/oss/.env.edge
+deploy/oss/edge/jwt/

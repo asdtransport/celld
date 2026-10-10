@@ -1,0 +1,8 @@
+---
+import Breadcrumbs from "../nav/Breadcrumbs.astro";
+const { title, subtitle, crumbs = [] } = Astro.props;
+---
+<div class="page-header"><Breadcrumbs crumbs={crumbs} />
+  <div class="page-title-row"><div><h1 class="page-title">{title}</h1>{subtitle && <p class="page-sub">{subtitle}</p>}</div>
+  <div><slot name="actions" /></div></div>
+</div>

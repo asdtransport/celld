@@ -1,0 +1,13 @@
+# frps — runs on the public edge. Sites dial IN to bindPort; nothing at the site is exposed.
+bindAddr = "0.0.0.0"
+bindPort = 7000
+# Tunnelled ports bind here. Inside the edge network only Caddy reaches them; never publish them.
+proxyBindAddr = "0.0.0.0"
+allowPorts = [{ start = 6000, end = 6009 }]
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+transport.tls.force = true          # refuse non-TLS clients
+
+log.to = "console"
+log.level = "info"

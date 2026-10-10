@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.7
+# Caddy + caddy-security (AuthCrunch): the open-source stand-in for Cloudflare Access.
+#   docker build -f edge/Dockerfile.caddy -t celliq-edge-caddy edge/
+ARG CADDY_BUILDER=caddy:2-builder
+ARG CADDY_IMAGE=caddy:2
+ARG CADDY_SECURITY_VERSION=v1.4.1
+
+FROM ${CADDY_BUILDER} AS build
+ARG CADDY_SECURITY_VERSION
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -s /run/secrets/extra_ca ]; then cat /run/secrets/extra_ca >> /etc/ssl/certs/ca-certificates.crt; fi; \
+    xcaddy build --with github.com/greenpau/caddy-security@${CADDY_SECURITY_VERSION}
+
+FROM ${CADDY_IMAGE}
+COPY --from=build /usr/bin/caddy /usr/bin/caddy
+COPY Caddyfile /etc/caddy/Caddyfile
+RUN caddy list-modules | grep -q '^security$' && caddy version

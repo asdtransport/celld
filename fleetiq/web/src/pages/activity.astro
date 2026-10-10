@@ -1,0 +1,31 @@
+---
+import Console from "../layouts/Console.astro";
+---
+<Console title="Activity" active="activity">
+  <header class="page-head">
+    <div>
+      <h1>Activity</h1>
+      <p>Every change made through FleetIQ, and every change it refused, with who asked.</p>
+    </div>
+    <div class="actions"><input type="search" id="filter" placeholder="Filter by person, action or target" aria-label="Filter activity" style="min-width:280px" /></div>
+  </header>
+  <section class="panel"><div class="table-wrap" id="list"><div class="empty skeleton">Loading activity</div></div></section>
+</Console>
+<script>
+  import { $, actionLabel, api, errorPanel, esc, when } from "../lib/api";
+  const label: Record<string, string> = { ok: "Done", failed: "Failed", denied: "Refused" };
+  async function load() {
+    try {
+      const rows = await api<any[]>("/api/audit?limit=500");
+      $("#list").innerHTML = rows.length ? `<table class="data"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Result</th><th>Detail</th></tr></thead><tbody>${
+        rows.map((r) => `<tr><td style="white-space:nowrap">${esc(when(r.at))}</td><td>${esc(r.actor)}</td><td>${esc(actionLabel(r.action))}<span class="sub"><code>${esc(r.action)}</code></span></td><td>${esc(r.target)}</td>
+          <td><span class="status ${r.outcome === "ok" ? "ok" : r.outcome === "denied" ? "warn" : "bad"}">${label[r.outcome] ?? esc(r.outcome)}</span></td><td><span class="sub" style="color:var(--ink-2)">${esc(r.detail ?? "")}</span></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">Nothing recorded yet.</div>`;
+    } catch (e) { errorPanel($("#list"), e, load); }
+  }
+  $("#filter").addEventListener("input", (e) => {
+    const q = (e.target as HTMLInputElement).value.toLowerCase();
+    document.querySelectorAll<HTMLTableRowElement>("#list tbody tr").forEach((tr) => { tr.hidden = !!q && !tr.textContent!.toLowerCase().includes(q); });
+  });
+  load();
+</script>

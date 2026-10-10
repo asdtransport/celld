@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+# frp (fatedier/frp, Apache-2.0): the open-source stand-in for Cloudflare Tunnel.
+# One image, two roles:  frps (edge, public)  |  frpc (site, behind NAT, dials out)
+ARG BASE=debian:bookworm-slim
+FROM ${BASE} AS fetch
+ARG FRP_VERSION=0.71.0
+ARG TARGETARCH=amd64
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -s /run/secrets/extra_ca ]; then cat /run/secrets/extra_ca >> /etc/ssl/certs/ca-certificates.crt; fi; \
+    set -e; f="frp_${FRP_VERSION}_linux_${TARGETARCH}.tar.gz"; base="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}"; \
+    curl -fsSLo "/tmp/$f" "$base/$f"; curl -fsSLo /tmp/sums "$base/frp_sha256_checksums.txt"; \
+    (cd /tmp && grep " $f\$" sums | sha256sum -c -); \
+    tar xzf "/tmp/$f" -C /tmp && install -m755 /tmp/frp_${FRP_VERSION}_linux_${TARGETARCH}/frps /tmp/frp_${FRP_VERSION}_linux_${TARGETARCH}/frpc /usr/local/bin/
+
+FROM ${BASE}
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 10001 frp && mkdir -p /var/lib/frp && chown frp /var/lib/frp
+COPY --from=fetch /usr/local/bin/frps /usr/local/bin/frpc /usr/local/bin/
+USER frp
+ENTRYPOINT []
+CMD ["frps", "--version"]

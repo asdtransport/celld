@@ -1,0 +1,49 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Containers" active="system">
+  <header class="page-head">
+    <div>
+      <h1>Containers</h1>
+      <p>The stack on this host: nodes, load balancer, tunnel client and edge, plus the nodes FleetIQ runs for its applications.</p>
+    </div>
+    <div class="actions"><button class="btn" type="button" id="refresh">Refresh</button></div>
+  </header>
+  <section class="panel"><div class="table-wrap" id="list"><div class="empty skeleton">Asking Docker</div></div></section>
+  <Drawer id="logs" title="Logs"><div id="logs-body"></div></Drawer>
+</Console>
+<script>
+  import { $, act, api, confirmAction, errorPanel, esc, gateOperatorControls, statusClass } from "../lib/api";
+  async function load() {
+    try {
+      const cs = await api<any[]>("/api/containers");
+      const group = (c: any) => (c.app ? `${c.app} (FleetIQ)` : c.project ?? "");
+      cs.sort((a, b) => group(a).localeCompare(group(b)) || a.name.localeCompare(b.name));
+      $("#list").innerHTML = cs.length ? `<table class="data"><thead><tr><th>Container</th><th>Part of</th><th>State</th><th>Image</th><th></th></tr></thead><tbody>${
+        cs.map((c) => `<tr><td><strong>${esc(c.service ?? c.name)}</strong><span class="sub"><code>${esc(c.name)}</code></span></td>
+          <td>${esc(group(c))}</td>
+          <td>${c.service === "deploy" && /Exited \(0\)/.test(c.status) ? `<span class="status off">Finished</span><span class="sub">one-time deploy job</span>` : `<span class="status ${statusClass(c.state)}">${esc(c.state)}</span><span class="sub">${esc(c.status)}</span>`}</td>
+          <td><code>${esc(c.image)}</code></td>
+          <td class="row-actions"><button class="btn sm" type="button" data-logs="${esc(c.id)}" data-name="${esc(c.name)}">Logs</button>
+            ${c.service === "deploy" ? "" : c.state === "running" ? `<button class="btn sm" type="button" data-operator data-act="restart" data-id="${esc(c.id)}" data-name="${esc(c.name)}">Restart</button>`
+              : `<button class="btn sm" type="button" data-operator data-act="start" data-id="${esc(c.id)}" data-name="${esc(c.name)}">Start</button>`}</td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No stack containers found. FleetIQ lists containers from the compose projects in <code>STACK_PROJECTS</code> and the nodes it runs.</div>`;
+      $("#list").querySelectorAll<HTMLButtonElement>("[data-act]").forEach((b) => b.addEventListener("click", async () => {
+        const a = b.dataset.act!; const n = b.dataset.name!;
+        if (a === "restart" && !(await confirmAction({ title: `Restart ${n}?`, text: n.includes("node") ? "A restarting node hands its cells to the other nodes, then rejoins." : "It stops briefly while it restarts.", ok: "Restart" }))) return;
+        if (await act(b, () => api(`/api/containers/${b.dataset.id}/${a}`, { method: "POST" }), `${a === "restart" ? "Restarted" : "Started"} ${n}`)) setTimeout(load, 1500);
+      }));
+      $("#list").querySelectorAll<HTMLButtonElement>("[data-logs]").forEach((b) => b.addEventListener("click", async () => {
+        const body = $("#logs-body"); body.innerHTML = `<div class="skeleton">Loading</div>`;
+        document.getElementById("logs-title")!.textContent = `Logs: ${b.dataset.name}`;
+        (document.getElementById("logs") as HTMLDialogElement).showModal();
+        try { const r = await api<any>(`/api/containers/${b.dataset.logs}/logs?tail=300`); body.innerHTML = `<pre class="log" style="max-height:none">${esc(r.logs || "No output")}</pre>`; body.scrollTop = body.scrollHeight; }
+        catch (e) { errorPanel(body, e); }
+      }));
+      gateOperatorControls($("#list"));
+    } catch (e) { errorPanel($("#list"), e, load); }
+  }
+  $("#refresh").addEventListener("click", load);
+  load();
+</script>

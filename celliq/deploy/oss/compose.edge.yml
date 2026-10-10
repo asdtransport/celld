@@ -1,0 +1,44 @@
+name: celliq-edge
+
+# CellIQ open-source EDGE — Caddy + caddy-security (≈ Cloudflare Access) and frps (≈ Cloudflare Tunnel).
+# Run on a small public VPS:
+#   sh keygen.sh && cp .env.edge.example .env.edge   # fill SITE_ADDRESS, FRP_TOKEN, admin password
+#   docker compose -f compose.edge.yml --env-file .env.edge up -d --build
+# Same host as the fleet, no NAT/tunnel: in .env.edge set UPSTREAM=lb:8080 and FLEET_EXTERNAL=true,
+# start the fleet first (make celld-up), then the edge joins its `celliq_fleet` network.
+# Public ports: 80/443 (Caddy, automatic HTTPS) and 7000 (frps, TLS-forced + token). Nothing else.
+
+services:
+  edge:
+    build:
+      context: edge
+      dockerfile: Dockerfile.caddy
+    image: ${EDGE_CADDY_IMAGE:-celliq-edge-caddy:latest}
+    restart: unless-stopped
+    env_file: .env.edge
+    ports: ["${EDGE_HTTP_PORT:-80}:80", "${EDGE_HTTPS_PORT:-443}:443", "${EDGE_HTTPS_PORT:-443}:443/udp"]
+    volumes:
+      - edge-caddy-data:/data            # ACME certs + caddy-security user store
+      - ./edge/jwt:/etc/caddy/jwt:ro     # ES256 signing key from keygen.sh
+    networks: [edge, fleet]
+
+  frps:
+    build:
+      context: .
+      dockerfile: Dockerfile.frp
+    image: ${FRP_IMAGE:-celliq-frp:latest}
+    restart: unless-stopped
+    command: ["frps", "-c", "/etc/frp/frps.toml"]
+    env_file: .env.edge
+    ports: ["${FRP_BIND_PORT:-7000}:7000"]   # 6000 (tunnelled app) is reachable only by `edge`
+    volumes: ["./edge/frps.toml:/etc/frp/frps.toml:ro"]
+    networks: [edge]
+
+networks:
+  edge: {}
+  fleet:          # same-host mode joins the fleet's network; otherwise a private, unused network
+    name: ${FLEET_NETWORK:-celliq_fleet}
+    external: ${FLEET_EXTERNAL:-false}
+
+volumes:
+  edge-caddy-data: {}

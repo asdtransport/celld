@@ -1,0 +1,38 @@
+// CellIQ — celld (self-hosted Workers runtime) config.
+// celld accepts a Wrangler subset and STOPS on unknown keys: no account_id, routes,
+// observability, send_email, vectorize, ai, browser. IDs are local names, not Cloudflare IDs.
+{
+  "name": "celliq",
+  "main": "cloudflare/worker/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "web/dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash"
+  },
+  "vars": {
+    "RUNTIME": "celld",
+    "ENVIRONMENT": "production",
+    "AUTH_MODE": "access",
+    "ACCESS_TEAM_DOMAIN": "lockstep.cloudflareaccess.com",
+    "ACCESS_AUD": "",
+    "AUTH_PUBLIC_KEY_B64": "",
+    "AUTH_JWKS_URL": "",
+    "AUTH_ALLOWED_ROLES": "authp/admin,authp/user"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "APP", "class_name": "AppData" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppData"] }],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "celliq", "database_id": "celliq", "migrations_dir": "cloudflare/migrations" }
+  ],
+  "kv_namespaces": [{ "binding": "KV", "id": "celliq-kv" }],
+  "r2_buckets": [{ "binding": "R2", "bucket_name": "celliq-artifacts" }],
+  "queues": {
+    "producers": [{ "binding": "INGEST_Q", "queue": "celliq-ingest" }],
+    "consumers": [{ "queue": "celliq-ingest" }]
+  },
+  "triggers": { "crons": ["0 */6 * * *"] }
+}

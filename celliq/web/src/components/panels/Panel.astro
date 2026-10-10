@@ -1,0 +1,4 @@
+---
+const { title, subtitle } = Astro.props;
+---
+<section class="panel">{(title || subtitle) && (<div class="panel-head"><div class="panel-title">{title}</div>{subtitle && <div class="panel-sub">{subtitle}</div>}</div>)}<slot /></section>

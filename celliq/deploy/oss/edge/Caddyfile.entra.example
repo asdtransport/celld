@@ -1,0 +1,21 @@
+# Add Microsoft Entra ID (OIDC) sign-in to the portal — replaces the Access → Entra IdP link.
+# Merge these lines into edge/Caddyfile inside `security { … }`.
+# App registration: redirect URI https://<SITE_ADDRESS>/auth/oauth2/azure/authorization-code-callback
+# Env on the edge: ENTRA_TENANT_ID, ENTRA_CLIENT_ID, ENTRA_CLIENT_SECRET.
+# Not exercised in the sandbox build — verify against your tenant before relying on it.
+
+		oauth identity provider azure {
+			realm azure
+			driver azure
+			tenant_id {$ENTRA_TENANT_ID}
+			client_id {$ENTRA_CLIENT_ID}
+			client_secret {$ENTRA_CLIENT_SECRET}
+			scopes openid email profile
+		}
+
+		# inside `authentication portal celliq_portal { … }`:
+			enable identity provider azure
+			transform user {
+				match realm azure
+				action add role authp/user
+			}

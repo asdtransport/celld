@@ -1,0 +1,53 @@
+---
+import Base from "../layouts/Base.astro";
+import PageHeader from "../components/layout/PageHeader.astro";
+import Panel from "../components/panels/Panel.astro";
+// Static shell; data is fetched client-side from the same-origin Hono API (celld or Workers).
+---
+<Base title="Dashboard" active="dashboard">
+  <PageHeader title="CellIQ Dashboard" subtitle="Driver-blind core on bun:sqlite (local) and Durable Object SQLite on celld."
+    crumbs={[{ label: "CellIQ", href: "/" }, { label: "Dashboard" }]}>
+    <span slot="actions" class="btn btn-ghost" id="count-badge">— items</span>
+  </PageHeader>
+  <div class="metrics">
+    <div class="metric"><div class="val" id="m-items">—</div><div class="lbl">Items</div></div>
+    <div class="metric"><div class="val" id="m-runtime">—</div><div class="lbl">Runtime</div></div>
+    <div class="metric"><div class="val" id="m-sha">—</div><div class="lbl">Build</div></div>
+  </div>
+  <Panel title="Add item">
+    <form id="add" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <input name="name" required placeholder="Name" style="flex:1;min-width:160px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px" />
+      <input name="note" placeholder="Note (optional)" style="flex:2;min-width:200px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px" />
+      <button class="btn btn-primary" type="submit">Add</button>
+      <span class="muted" id="add-err"></span>
+    </form>
+  </Panel>
+  <Panel title="Items" subtitle="Live from /api/items">
+    <div id="items"><div class="muted" style="padding:18px 4px;font-size:14px">Loading…</div></div>
+  </Panel>
+  <script>
+    import { apiGet, apiPost, esc, fmtDate } from "../lib/api";
+    async function load() {
+      const [items, health] = await Promise.all([apiGet<any[]>("/api/items", []), apiGet<any>("/api/health", {})]);
+      document.getElementById("m-items")!.textContent = String(items.length);
+      document.getElementById("count-badge")!.textContent = `${items.length} items`;
+      const rt = await apiGet<any>("/api/runtime", {}); document.getElementById("m-runtime")!.textContent = rt.runtime ?? (health.ok ? "up" : "down");
+      document.getElementById("m-sha")!.textContent = String(health.version ?? "dev").slice(0, 7);
+      const el = document.getElementById("items")!;
+      if (!items.length) { el.innerHTML = `<div class="muted" style="padding:18px 4px;font-size:14px">No items yet — add one above.</div>`; return; }
+      el.innerHTML = `<table class="data-table"><thead><tr><th>Name</th><th>Note</th><th class="right">Created</th></tr></thead><tbody>${
+        items.map((i) => `<tr><td><a href="/items?id=${encodeURIComponent(i.id)}">${esc(i.name)}</a></td><td>${esc(i.note ?? "—")}</td><td class="right">${esc(fmtDate(i.created_at ?? i.createdAt))}</td></tr>`).join("")
+      }</tbody></table>`;
+    }
+    document.getElementById("add")!.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target as HTMLFormElement);
+      const err = document.getElementById("add-err")!; err.textContent = "";
+      try {
+        await apiPost("/api/items", { name: f.get("name"), note: f.get("note") || undefined });
+        (e.target as HTMLFormElement).reset(); await load();
+      } catch (x) { err.textContent = String((x as Error).message); }
+    });
+    load();
+  </script>
+</Base>

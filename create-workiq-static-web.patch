@@ -1,0 +1,287 @@
+diff --git a/templates/base/AGENTS.md b/templates/base/AGENTS.md
+index f782534..5c04241 100644
+--- a/templates/base/AGENTS.md
++++ b/templates/base/AGENTS.md
+@@ -32,7 +32,7 @@ To add `widgets`:
+ 4. `src/contract.ts` — add the Zod `WidgetInput`.
+ 5. `src/app.ts` — mount `GET/POST/PATCH/DELETE /api/widgets` in `makeApi()`.
+ 6. `src/lib/repo.test.ts` + `src/app.test.ts` — add cases.
+-7. `web/src/pages/widgets/` — add list + `[id]` pages using `Base/PageHeader/Panel/DataTable`.
++7. `web/src/pages/widgets.astro` (list) + `widget.astro?id=` (detail) — static pages that fetch `/api/widgets` client-side, using `Base/PageHeader/Panel`. No SSR, no hand-written HTML in `src/`.
+ 8. `make db-generate` to emit the migration.
+ 
+ ## The loop — run after every change
+diff --git a/templates/core/src/dashboard.ts b/templates/core/src/dashboard.ts
+deleted file mode 100644
+index 740c824..0000000
+--- a/templates/core/src/dashboard.ts
++++ /dev/null
+@@ -1,33 +0,0 @@
+-export const dashboard = () => `<!doctype html><html lang="en"><head>
+-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+-<title>{{APP_NAME}}</title><style>
+-:root{--navy:#1f4e5f;--teal:#2e7d8a;--surface:#f6f8f9;--panel:#fff;--line:#dbe6ea;--muted:#6a8894;--ink:#12303a}
+-*{box-sizing:border-box}body{margin:0;background:var(--surface);color:var(--ink);font:15px/1.5 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+-.app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+-.side{background:linear-gradient(180deg,var(--navy),#163a47);color:#dcebef;padding:22px 16px}
+-.brand{font-weight:800;font-size:20px;color:#fff}.brand span{color:#6fd0dc}.brand small{display:block;font-weight:500;font-size:11px;color:#9fc4cd;margin-top:2px}
+-.nav{margin-top:20px}.nav a{display:flex;gap:9px;align-items:center;padding:9px 10px;border-radius:8px;color:#cfe4e9;text-decoration:none;font-size:14px;font-weight:500}
+-.nav a.active{background:rgba(111,208,220,.16);color:#fff;box-shadow:inset 3px 0 0 #6fd0dc}.dot{width:7px;height:7px;border-radius:50%;background:#6fd0dc}
+-.main{padding:28px 34px;max-width:960px}h1{font-size:24px;font-weight:800;color:var(--navy);margin:0 0 4px;letter-spacing:-.02em}
+-.sub{color:var(--muted);margin-bottom:20px}
+-.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(18,48,58,.05);padding:18px 20px;margin-bottom:18px}
+-.panel-title{font-weight:700;color:var(--navy);margin-bottom:12px}
+-table{width:100%;border-collapse:collapse;font-size:14px}th{text-align:left;text-transform:uppercase;font-size:11px;letter-spacing:.06em;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--line)}
+-td{padding:11px 10px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}
+-input{padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;flex:1}
+-.btn{background:var(--teal);color:#fff;border:none;border-radius:9px;padding:9px 15px;font-weight:700;cursor:pointer}
+-.row{display:flex;gap:8px}.metric .v{font-size:28px;font-weight:800;color:var(--navy)}.metric .l{font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.06em;margin-top:6px}
+-.metric{border-left:3px solid var(--teal)}
+-</style></head><body><div class="app">
+-<aside class="side"><div class="brand">{{APP_NAME}}<span>·IQ</span><small>WorkIQ · create-workiq</small></div>
+-<nav class="nav"><a class="active"><span class="dot"></span>Items</a><a><span class="dot"></span>Settings</a></nav></aside>
+-<main class="main"><h1>{{APP_NAME}}</h1><div class="sub">Scaffolded by create-workiq · driver-blind Hono core on bun:sqlite (local) / DO SQLite (edge)</div>
+-<div class="panel metric"><div class="v" id="count">0</div><div class="l">Items</div></div>
+-<div class="panel"><div class="panel-title">Add item</div><div class="row"><input id="name" placeholder="name…"><input id="note" placeholder="note (optional)"><button class="btn" onclick="add()">Create</button></div></div>
+-<div class="panel"><div class="panel-title">Items</div><table><thead><tr><th>Name</th><th>Note</th><th>Created</th></tr></thead><tbody id="rows"></tbody></table></div>
+-</main></div><script>
+-async function load(){const r=await fetch('/api/items');const items=await r.json();document.getElementById('count').textContent=items.length;
+-document.getElementById('rows').innerHTML=items.map(i=>'<tr><td>'+i.name+'</td><td>'+(i.note||'—')+'</td><td>'+new Date(i.created_at*1000).toLocaleString()+'</td></tr>').join('')||'<tr><td colspan=3 style=color:#6a8894>No items yet.</td></tr>';}
+-async function add(){const name=document.getElementById('name').value.trim();if(!name)return;await fetch('/api/items',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,note:document.getElementById('note').value||undefined})});document.getElementById('name').value='';document.getElementById('note').value='';load();}
+-load();
+-</script></body></html>`;
+diff --git a/templates/core/src/index.ts b/templates/core/src/index.ts
+index e1763ad..476bd38 100644
+--- a/templates/core/src/index.ts
++++ b/templates/core/src/index.ts
+@@ -1,10 +1,11 @@
+ import { Database } from "bun:sqlite";
++import { join, normalize, resolve } from "node:path";
+ import { drizzle } from "drizzle-orm/bun-sqlite";
+ import { buildApp } from "./app";
+-import { dashboard } from "./dashboard";
+ import { DDL } from "./db/ddl";
+ import { setDb } from "./db/runtime";
+ // Local entry: bun:sqlite is synchronous, so the same sync repo the DO uses runs here.
++// The UI is the Astro build (web/dist) — the same files celld and Workers serve. No hand-written HTML.
+ const sqlite = new Database(process.env.APP_DB ?? "local/app.db");
+ sqlite.exec("PRAGMA journal_mode = WAL;");
+ sqlite.exec(DDL);
+@@ -13,13 +14,30 @@ const app = buildApp({
+   buildSha: process.env.BUILD_SHA,
+   allowedOrigins: process.env.ALLOWED_ORIGINS?.split(",").filter(Boolean),
+ });
++const WEB = resolve(process.env.WEB_DIST ?? "web/dist");
++
++async function staticFile(pathname: string): Promise<Response> {
++  const clean = normalize(decodeURIComponent(pathname));
++  const rel = clean === "/" ? "index.html" : clean.slice(1);
++  for (const candidate of [rel, `${rel.replace(/\/$/, "")}.html`, `${rel}/index.html`]) {
++    const full = resolve(WEB, candidate);
++    if (!full.startsWith(WEB)) break;
++    const f = Bun.file(full);
++    if (await f.exists()) return new Response(f);
++  }
++  if (!(await Bun.file(join(WEB, "index.html")).exists())) {
++    return new Response("The web build is missing. Run `make web-build`, then reload.", { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } });
++  }
++  return new Response("Not found", { status: 404 });
++}
++
+ const port = Number(process.env.PORT ?? 8787);
+ Bun.serve({
+   port,
+   fetch(req) {
+     const u = new URL(req.url);
+     if (u.pathname.startsWith("/api/")) return app.fetch(req);
+-    return new Response(dashboard(), { headers: { "content-type": "text/html" } });
++    return staticFile(u.pathname);
+   },
+ });
+ console.log(`{{APP_NAME}} local -> http://localhost:${port}`);
+diff --git a/templates/web/astro.config.mjs b/templates/web/astro.config.mjs
+index 33491f7..52f1840 100644
+--- a/templates/web/astro.config.mjs
++++ b/templates/web/astro.config.mjs
+@@ -1,9 +1,10 @@
+ import { defineConfig } from "astro/config";
+-import node from "@astrojs/node";
+-// SSR; fetches the Hono API at request time. API points at the Worker in prod, localhost in dev.
++// Static build: the Bun entry (local), celld and Workers all serve web/dist through one path.
++// Pages fetch /api/* client-side, same-origin, so an Access or edge session rides along.
++// Flat files (items.html -> /items) because celld 0.6.2 404s nested dir/index.html.
+ export default defineConfig({
+-  output: "server",
+-  adapter: node({ mode: "standalone" }),
++  output: "static",
++  build: { format: "file" },
+   server: { port: 4321, host: true },
+   devToolbar: { enabled: false },
+ });
+diff --git a/templates/web/package.json b/templates/web/package.json
+index 4661a9d..a1eb6b9 100644
+--- a/templates/web/package.json
++++ b/templates/web/package.json
+@@ -2,6 +2,6 @@
+   "name": "{{APP_SLUG}}-web",
+   "type": "module",
+   "private": true,
+-  "scripts": { "dev": "astro dev", "build": "astro build", "start": "node ./dist/server/entry.mjs" },
+-  "dependencies": { "astro": "^5.1.1", "@astrojs/node": "^9.0.0" }
++  "scripts": { "dev": "astro dev", "build": "astro build" },
++  "dependencies": { "astro": "^5.1.1" }
+ }
+diff --git a/templates/web/src/lib/api.ts b/templates/web/src/lib/api.ts
+index 2acd3a6..979f0a1 100644
+--- a/templates/web/src/lib/api.ts
++++ b/templates/web/src/lib/api.ts
+@@ -1,6 +1,14 @@
+-const BASE = import.meta.env.API ?? process.env.API ?? "http://localhost:8787";
++// Client-side API helper. Same-origin in production (celld / Workers); localhost:8787 under `astro dev`.
++export const API =
++  typeof location !== "undefined" && location.port === "4321" ? "http://localhost:8787" : "";
+ export async function apiGet<T>(path: string, fallback: T): Promise<T> {
+-  try { const r = await fetch(`${BASE}${path}`); return r.ok ? ((await r.json()) as T) : fallback; }
++  try { const r = await fetch(`${API}${path}`, { credentials: "include" }); return r.ok ? ((await r.json()) as T) : fallback; }
+   catch { return fallback; }
+ }
++export async function apiPost<T>(path: string, body: unknown): Promise<T> {
++  const r = await fetch(`${API}${path}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
++  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
++  return (await r.json()) as T;
++}
+ export const fmtDate = (unix?: number) => (unix ? new Date(unix * 1000).toLocaleString() : "—");
++export const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+diff --git a/templates/web/src/pages/index.astro b/templates/web/src/pages/index.astro
+index 5c41188..a15b23f 100644
+--- a/templates/web/src/pages/index.astro
++++ b/templates/web/src/pages/index.astro
+@@ -2,26 +2,52 @@
+ import Base from "../layouts/Base.astro";
+ import PageHeader from "../components/layout/PageHeader.astro";
+ import Panel from "../components/panels/Panel.astro";
+-import DataTable from "../components/tables/DataTable.astro";
+-import { apiGet, fmtDate } from "../lib/api";
+-// AGENT: swap `items` for your resource; the shape mirrors src/lib/repo.ts.
+-const items = await apiGet<any[]>("/api/items", []);
+-const rows = items.map((i) => ({ id: i.id, name: i.name, note: i.note ?? "—", created: fmtDate(i.created_at ?? i.createdAt) }));
+-const columns = [
+-  { key: "name", label: "Name", href: "/items/:id" },
+-  { key: "note", label: "Note" },
+-  { key: "created", label: "Created", align: "right" },
+-];
++// Static shell; data is fetched client-side from the same-origin Hono API (celld or Workers).
+ ---
+ <Base title="Dashboard" active="dashboard">
+-  <PageHeader title="{{APP_NAME}} Dashboard" subtitle="Live data from the Hono API — driver-blind core on bun:sqlite (local) / DO SQLite (edge)."
++  <PageHeader title="{{APP_NAME}} Dashboard" subtitle="Driver-blind core on bun:sqlite (local) and Durable Object SQLite on celld."
+     crumbs={[{ label: "{{APP_NAME}}", href: "/" }, { label: "Dashboard" }]}>
+-    <span slot="actions" class="btn btn-ghost">{items.length} items</span>
++    <span slot="actions" class="btn btn-ghost" id="count-badge">— items</span>
+   </PageHeader>
+   <div class="metrics">
+-    <div class="metric"><div class="val">{items.length}</div><div class="lbl">Items</div></div>
++    <div class="metric"><div class="val" id="m-items">—</div><div class="lbl">Items</div></div>
++    <div class="metric"><div class="val" id="m-runtime">—</div><div class="lbl">Runtime</div></div>
++    <div class="metric"><div class="val" id="m-sha">—</div><div class="lbl">Build</div></div>
+   </div>
+-  <Panel title="Items" subtitle={`${items.length} records`}>
+-    <DataTable columns={columns} rows={rows} empty="No items yet — POST /api/items to add one." />
++  <Panel title="Add item">
++    <form id="add" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
++      <input name="name" required placeholder="Name" style="flex:1;min-width:160px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px" />
++      <input name="note" placeholder="Note (optional)" style="flex:2;min-width:200px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px" />
++      <button class="btn btn-primary" type="submit">Add</button>
++      <span class="muted" id="add-err"></span>
++    </form>
+   </Panel>
++  <Panel title="Items" subtitle="Live from /api/items">
++    <div id="items"><div class="muted" style="padding:18px 4px;font-size:14px">Loading…</div></div>
++  </Panel>
++  <script>
++    import { apiGet, apiPost, esc, fmtDate } from "../lib/api";
++    async function load() {
++      const [items, health] = await Promise.all([apiGet<any[]>("/api/items", []), apiGet<any>("/api/health", {})]);
++      document.getElementById("m-items")!.textContent = String(items.length);
++      document.getElementById("count-badge")!.textContent = `${items.length} items`;
++      const rt = await apiGet<any>("/api/runtime", {}); document.getElementById("m-runtime")!.textContent = rt.runtime ?? (health.ok ? "up" : "down");
++      document.getElementById("m-sha")!.textContent = String(health.version ?? "dev").slice(0, 7);
++      const el = document.getElementById("items")!;
++      if (!items.length) { el.innerHTML = `<div class="muted" style="padding:18px 4px;font-size:14px">No items yet — add one above.</div>`; return; }
++      el.innerHTML = `<table class="data-table"><thead><tr><th>Name</th><th>Note</th><th class="right">Created</th></tr></thead><tbody>${
++        items.map((i) => `<tr><td><a href="/items?id=${encodeURIComponent(i.id)}">${esc(i.name)}</a></td><td>${esc(i.note ?? "—")}</td><td class="right">${esc(fmtDate(i.created_at ?? i.createdAt))}</td></tr>`).join("")
++      }</tbody></table>`;
++    }
++    document.getElementById("add")!.addEventListener("submit", async (e) => {
++      e.preventDefault();
++      const f = new FormData(e.target as HTMLFormElement);
++      const err = document.getElementById("add-err")!; err.textContent = "";
++      try {
++        await apiPost("/api/items", { name: f.get("name"), note: f.get("note") || undefined });
++        (e.target as HTMLFormElement).reset(); await load();
++      } catch (x) { err.textContent = String((x as Error).message); }
++    });
++    load();
++  </script>
+ </Base>
+diff --git a/templates/web/src/pages/items.astro b/templates/web/src/pages/items.astro
+new file mode 100644
+index 0000000..b85d5b7
+--- /dev/null
++++ b/templates/web/src/pages/items.astro
+@@ -0,0 +1,26 @@
++---
++import Base from "../layouts/Base.astro";
++import PageHeader from "../components/layout/PageHeader.astro";
++import Panel from "../components/panels/Panel.astro";
++// Static detail page: /items/?id=<uuid>. No getStaticPaths needed, so it works on any static host.
++---
++<Base title="Item" active="items">
++  <PageHeader title="Item" subtitle="Loading…" crumbs={[{ label: "{{APP_NAME}}", href: "/" }, { label: "Items", href: "/" }, { label: "Detail" }]}>
++    <a slot="actions" class="btn btn-ghost" href="/">← Dashboard</a>
++  </PageHeader>
++  <Panel title="Detail"><div id="detail" class="muted">Loading…</div></Panel>
++  <script>
++    import { apiGet, esc, fmtDate } from "../lib/api";
++    const id = new URLSearchParams(location.search).get("id") ?? "";
++    const item = id ? await apiGet<any>(`/api/items/${encodeURIComponent(id)}`, null) : null;
++    const title = document.querySelector(".page-title"); const sub = document.querySelector(".page-sub");
++    if (title) title.textContent = item?.name ?? "Not found";
++    if (sub) sub.textContent = item ? `Created ${fmtDate(item.created_at ?? item.createdAt)}` : `No item ${id}`;
++    document.getElementById("detail")!.outerHTML = item
++      ? `<div style="display:grid;grid-template-columns:120px 1fr;gap:10px 16px;font-size:14px">
++          <div class="muted">ID</div><div style="font-family:ui-monospace,monospace">${esc(item.id)}</div>
++          <div class="muted">Name</div><div>${esc(item.name)}</div>
++          <div class="muted">Note</div><div>${esc(item.note ?? "—")}</div></div>`
++      : `<div class="muted">Item not found.</div>`;
++  </script>
++</Base>
+diff --git a/templates/web/src/pages/items/_id_.astro b/templates/web/src/pages/items/_id_.astro
+deleted file mode 100644
+index 3f485d9..0000000
+--- a/templates/web/src/pages/items/_id_.astro
++++ /dev/null
+@@ -1,23 +0,0 @@
+----
+-import Base from "../../layouts/Base.astro";
+-import PageHeader from "../../components/layout/PageHeader.astro";
+-import Panel from "../../components/panels/Panel.astro";
+-import { apiGet, fmtDate } from "../../lib/api";
+-const { id } = Astro.params;
+-const item = await apiGet<any>(`/api/items/${id}`, null);
+----
+-<Base title={item?.name ?? "Item"} active="items">
+-  <PageHeader title={item?.name ?? "Not found"} subtitle={item ? `Created ${fmtDate(item.created_at ?? item.createdAt)}` : `No item ${id}`}
+-    crumbs={[{ label: "{{APP_NAME}}", href: "/" }, { label: "Items", href: "/" }, { label: (item?.name ?? id)?.slice(0, 24) }]}>
+-    <a slot="actions" class="btn btn-ghost" href="/">← Dashboard</a>
+-  </PageHeader>
+-  {item ? (
+-    <Panel title="Detail">
+-      <div style="display:grid;grid-template-columns:120px 1fr;gap:10px 16px;font-size:14px">
+-        <div class="muted">ID</div><div style="font-family:ui-monospace,monospace">{item.id}</div>
+-        <div class="muted">Name</div><div>{item.name}</div>
+-        <div class="muted">Note</div><div>{item.note ?? "—"}</div>
+-      </div>
+-    </Panel>
+-  ) : (<Panel><div class="muted">Item not found.</div></Panel>)}
+-</Base>

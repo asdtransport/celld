@@ -1,0 +1,26 @@
+---
+import Base from "../../layouts/Base.astro";
+import PageHeader from "../../components/layout/PageHeader.astro";
+import Panel from "../../components/panels/Panel.astro";
+// Static detail page: /items/?id=<uuid>. No getStaticPaths needed, so it works on any static host.
+---
+<Base title="Item" active="items">
+  <PageHeader title="Item" subtitle="Loading…" crumbs={[{ label: "CellIQ", href: "/" }, { label: "Items", href: "/" }, { label: "Detail" }]}>
+    <a slot="actions" class="btn btn-ghost" href="/">← Dashboard</a>
+  </PageHeader>
+  <Panel title="Detail"><div id="detail" class="muted">Loading…</div></Panel>
+  <script>
+    import { apiGet, esc, fmtDate } from "../../lib/api";
+    const id = new URLSearchParams(location.search).get("id") ?? "";
+    const item = id ? await apiGet<any>(`/api/items/${encodeURIComponent(id)}`, null) : null;
+    const title = document.querySelector(".page-title"); const sub = document.querySelector(".page-sub");
+    if (title) title.textContent = item?.name ?? "Not found";
+    if (sub) sub.textContent = item ? `Created ${fmtDate(item.created_at ?? item.createdAt)}` : `No item ${id}`;
+    document.getElementById("detail")!.outerHTML = item
+      ? `<div style="display:grid;grid-template-columns:120px 1fr;gap:10px 16px;font-size:14px">
+          <div class="muted">ID</div><div style="font-family:ui-monospace,monospace">${esc(item.id)}</div>
+          <div class="muted">Name</div><div>${esc(item.name)}</div>
+          <div class="muted">Note</div><div>${esc(item.note ?? "—")}</div></div>`
+      : `<div class="muted">Item not found.</div>`;
+  </script>
+</Base>

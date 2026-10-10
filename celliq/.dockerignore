@@ -1,0 +1,11 @@
+node_modules
+web/node_modules
+docs/node_modules
+web/dist
+web/.astro
+.celld
+.wrangler
+local
+docs
+*.log
+.git

@@ -1,0 +1,22 @@
+---
+import "../styles/house.css";
+const { title = "CellIQ", active = "items" } = Astro.props;
+// AGENT: add console routes here as you add pages.
+const nav = [
+  { group: "Console", items: [
+    { id: "dashboard", label: "Dashboard", href: "/" },
+    { id: "items", label: "Items", href: "/" },
+  ]},
+];
+---
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>{title} · CellIQ</title></head>
+<body><div class="app">
+  <aside class="sidebar">
+    <div class="brand">CellIQ<span>·IQ</span><small>WorkIQ console</small></div>
+    {nav.map((g) => (<div><div class="nav-group">{g.group}</div>
+      {g.items.map((it) => (<a class={`nav-item ${it.id === active ? "active" : ""}`} href={it.href}><span class="nav-dot"></span>{it.label}</a>))}
+    </div>))}
+  </aside>
+  <main class="main"><slot /></main>
+</div></body></html>

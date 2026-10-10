@@ -1,0 +1,71 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Applications" active="apps">
+  <header class="page-head">
+    <div>
+      <h1>Applications</h1>
+      <p>Each application is one celld fleet with its own prefix in the bucket. FleetIQ can run its nodes, or watch nodes you run elsewhere.</p>
+    </div>
+    <div class="actions"><button class="btn primary" type="button" data-drawer-open="new-app" data-operator>Create application</button></div>
+  </header>
+
+  <section class="panel">
+    <div class="table-wrap" id="list"><div class="empty skeleton">Loading applications</div></div>
+  </section>
+
+  <Drawer id="new-app" title="Create application" submit="Create application" formId="new-app-form">
+    <form id="new-app-form">
+      <label class="field"><span>Name</span><input type="text" name="name" required pattern="[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" autocomplete="off" spellcheck="false" placeholder="status-board" />
+        <small>Must match the <code>name</code> in the project’s wrangler config. It also becomes the bucket prefix.</small></label>
+      <label class="field"><span>Description</span><input type="text" name="description" maxlength="200" placeholder="Who uses it and why" /></label>
+      <label class="check"><input type="checkbox" name="managed" checked /><span>FleetIQ runs the nodes<small>Turn off to watch a fleet that runs somewhere else, such as a compose stack. You can’t scale those from here.</small></span></label>
+      <label class="field"><span>Nodes</span><input type="number" name="desiredNodes" min="0" max="9" value="2" />
+        <small>Two or more: a write is durable once a second node holds it, instead of waiting on the bucket.</small></label>
+      <label class="field"><span>Health check path</span><input type="text" name="healthPath" value="/" spellcheck="false" />
+        <small>The load balancer sends traffic only to nodes that answer this path with 2xx.</small></label>
+      <label class="field"><span>Node image</span><input type="text" name="nodeImage" placeholder="ghcr.io/denoland/celld:0.6.2" spellcheck="false" />
+        <small>Leave empty for the default celld image.</small></label>
+    </form>
+  </Drawer>
+</Console>
+
+<script>
+  import { $, act, ago, api, errorPanel, esc, short, statusClass } from "../lib/api";
+
+  async function load() {
+    const el = $("#list");
+    try {
+      const apps = await api<any[]>("/api/apps");
+      el.innerHTML = apps.length ? `<table class="data"><thead><tr>
+          <th>Application</th><th>Version</th><th class="num">Live nodes</th><th>Nodes run by</th><th>Last deployment</th></tr></thead><tbody>${
+        apps.map((a) => `<tr>
+          <td class="main-cell"><a href="/app?name=${encodeURIComponent(a.name)}">${esc(a.name)}</a>${a.description ? `<span class="sub">${esc(a.description)}</span>` : ""}</td>
+          <td>${a.version ? `<code>${esc(a.version)}</code>` : `<span class="status off">Not deployed</span>`}</td>
+          <td class="num"><span class="status ${a.liveNodes === 0 ? (a.version ? "bad" : "off") : a.managed && a.liveNodes < a.desiredNodes ? "warn" : "ok"}">${a.managed ? `${a.liveNodes} of ${a.desiredNodes}` : `${a.liveNodes} live`}</span></td>
+          <td>${a.managed ? `<span class="tag teal">FleetIQ</span>` : `<span class="tag">External</span>`}</td>
+          <td>${a.lastDeployment ? `<span class="status ${statusClass(a.lastDeployment.status)}">${a.lastDeployment.status === "failed" ? `${a.lastDeployment.kind === "rollback" ? "Rollback" : "Upload"} rejected` : `${a.lastDeployment.kind === "rollback" ? "Rolled back to" : "Deployed"} ${esc(short(a.lastDeployment.version))}`}</span><span class="sub">${ago(a.lastDeployment.startedAt)} by ${esc(a.lastDeployment.actor)}</span>` : `<span class="sub">Never</span>`}</td>
+        </tr>`).join("")}</tbody></table>`
+        : `<div class="empty"><strong>No applications yet</strong>Create one, then upload a Worker project to deploy it.</div>`;
+    } catch (e) { errorPanel(el, e, load); }
+  }
+
+  const form = $<HTMLFormElement>("#new-app-form");
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(form);
+    const btn = document.querySelector<HTMLButtonElement>('button[form="new-app-form"]');
+    const body = {
+      name: String(f.get("name")).trim(), description: String(f.get("description") || "") || undefined,
+      managed: f.get("managed") === "on", desiredNodes: Number(f.get("desiredNodes") || 0),
+      healthPath: String(f.get("healthPath") || "/"), nodeImage: String(f.get("nodeImage") || "") || undefined,
+    };
+    const ok = await act(btn, async () => {
+      await api("/api/apps", { method: "POST", json: body });
+      if (body.managed && body.desiredNodes > 0) await api(`/api/apps/${body.name}/scale`, { method: "POST", json: { nodes: body.desiredNodes } });
+    }, `Created ${body.name}${body.managed && body.desiredNodes ? ` with ${body.desiredNodes} nodes` : ""}`);
+    if (ok) location.href = `/app?name=${encodeURIComponent(body.name)}`;
+  });
+  load();
+</script>

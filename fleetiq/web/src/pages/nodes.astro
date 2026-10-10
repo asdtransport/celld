@@ -1,0 +1,40 @@
+---
+import Console from "../layouts/Console.astro";
+---
+<Console title="Nodes" active="nodes">
+  <header class="page-head">
+    <div>
+      <h1>Nodes</h1>
+      <p>Every celld node holding a lease, by application. A node that misses two renewals loses its lease and another node takes over its cells.</p>
+    </div>
+    <div class="actions"><button class="btn" type="button" id="refresh">Refresh</button></div>
+  </header>
+  <div id="fleets" class="stack"><section class="panel"><div class="empty skeleton">Reading leases</div></section></div>
+</Console>
+<script>
+  import { $, api, bytes, errorPanel, esc, short } from "../lib/api";
+  async function load() {
+    const host = $("#fleets");
+    try {
+      const apps = await api<any[]>("/api/apps");
+      if (!apps.length) { host.innerHTML = `<section class="panel"><div class="empty"><strong>No applications</strong><a href="/apps">Create one</a> to start nodes.</div></section>`; return; }
+      const details = await Promise.all(apps.map((a) => api<any>(`/api/apps/${encodeURIComponent(a.name)}`).catch((e) => ({ error: e.message, app: a }))));
+      host.innerHTML = details.map((d: any) => {
+        if (d.error) return `<section class="panel"><div class="panel-head"><h2>${esc(d.app.name)}</h2></div><div class="empty">${esc(d.error)}</div></section>`;
+        const f = d.fleet;
+        return `<section class="panel"><div class="panel-head"><h2><a href="/app?name=${encodeURIComponent(d.app.name)}" style="color:inherit;text-decoration:none">${esc(d.app.name)}</a></h2>
+          <span class="status ${f.live === 0 ? (f.version ? "bad" : "off") : d.app.managed && f.live < d.app.desiredNodes ? "warn" : "ok"}">${f.live} live${d.app.managed ? ` of ${d.app.desiredNodes} wanted` : ""}</span></div>
+          ${f.nodes.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Node</th><th>Lease</th><th>Version</th><th class="num">Cells</th><th class="num">Memory</th><th class="num">CPU</th><th>Replicates to</th></tr></thead><tbody>${
+            f.nodes.map((n: any) => { const s = n.state && !n.state.error ? n.state : null; return `<tr>
+              <td style="white-space:nowrap"><code>${esc(n.addr.split(":")[0])}</code></td>
+              <td>${n.fresh ? `<span class="status ok">Held</span>` : -n.expiresInMs > 1e11 ? `<span class="status off">Left the fleet</span>` : `<span class="status bad">Expired</span>`}</td>
+              <td>${s ? `<code>${esc(short(s.version, 16))}</code>` : "—"}</td>
+              <td class="num">${s ? `${s.owned}` : "—"}</td><td class="num">${s ? bytes(s.rssBytes) : "—"}</td><td class="num">${s ? `${s.cpuPercent.toFixed(1)}%` : "—"}</td>
+              <td>${n.ensemble.length ? n.ensemble.map((e: string) => `<code>${esc(f.nodes.find((x: any) => x.id === e)?.addr ?? short(e.replace(/^node_/, ""), 8))}</code>`).join(", ") : `<span class="status warn">No peer</span><span class="sub">writes wait on the bucket</span>`}</td></tr>`; }).join("")}</tbody></table></div>`
+            : `<div class="empty">No node holds a lease.</div>`}</section>`;
+      }).join("");
+    } catch (e) { errorPanel(host, e, load); }
+  }
+  $("#refresh").addEventListener("click", load);
+  load(); setInterval(() => { if (!document.hidden) load(); }, 10000);
+</script>
