@@ -2,7 +2,7 @@ import type { App, MoverJob } from "../db/schema";
 import * as repo from "../lib/repo";
 import { fleetOf, scaleNodes } from "../services/fleet";
 import { syncLb } from "../services/network";
-import { type Compare, execute, normPrefix, plan, type SyncSpec } from "./engine";
+import { type Compare, deleteGuard, execute, normPrefix, plan, type SyncSpec } from "./engine";
 import { connectorFor } from "./providers";
 import * as mrepo from "./repo";
 import { type Connector, MoverError, joinKey } from "./types";
@@ -32,6 +32,7 @@ export interface RunRequest {
   label: string; job?: MoverJob | null; dryRun?: boolean; actor: string;
   src: { endpoint: string; prefix: string }; dst: { endpoint: string; prefix: string };
   mode: "copy" | "mirror"; compare: Compare; include?: string[]; exclude?: string[]; concurrency?: number; verify?: boolean;
+  bwLimitMbps?: number | null; maxDeletePct?: number;
   before?: (log: (s: string) => void) => Promise<void>; after?: (log: (s: string) => void, ok: boolean) => Promise<void>;
 }
 
@@ -56,7 +57,10 @@ export function startRun(req: RunRequest) {
       if (req.before && !req.dryRun) { await req.before(log); beforeDone = true; }
       const p = await plan(spec, (side, n) => log(`Listed ${n} objects on the ${side}`));
       stats = { plan: { copy: p.copy.length, new: p.copy.filter((i) => i.reason === "new").length, changed: p.copy.filter((i) => i.reason === "changed").length, remove: p.remove.length, same: p.same, bytes: p.bytes, srcCount: p.srcCount, dstCount: p.dstCount } };
+      if (p.hashed) log(`Hashed ${p.hashed} objects to compare checksums`);
       log(`Plan: ${p.copy.length} to copy (${(p.bytes / 1048576).toFixed(1)} MB), ${p.remove.length} to delete, ${p.same} already in sync`);
+      const guard = deleteGuard(p, req.maxDeletePct ?? 50);
+      if (guard) { stats.plan.deletesBlocked = guard; log(`⚠ ${guard}`); }
       if (req.dryRun) {
         stats.sample = { copy: p.copy.slice(0, 50), remove: p.remove.slice(0, 50) };
         mrepo.finishRun(id, { status: "planned", stats: JSON.stringify(stats), log: lines.join("\n") }); ok = true; return;
@@ -64,14 +68,15 @@ export function startRun(req: RunRequest) {
       mrepo.setRun(id, { status: "running", stats: JSON.stringify(stats) });
       let last = 0;
       const r = await execute(spec, p, {
-        concurrency: req.concurrency ?? 8, verify: req.verify ?? true, signal: ac.signal,
+        concurrency: req.concurrency ?? 8, verify: req.verify ?? true, signal: ac.signal, bwLimitMbps: req.bwLimitMbps, maxDeletePct: req.maxDeletePct ?? 50,
         onProgress: (pr) => { if (Date.now() - last > 1500) { last = Date.now(); mrepo.setRun(id, { stats: JSON.stringify({ ...stats, progress: pr }) }); } },
       });
-      stats.result = { copied: r.done, bytes: r.bytes, failed: r.failed, removed: r.removed, ms: r.ms, verified: r.verified, errors: r.errors.slice(0, 20) };
+      stats.result = { copied: r.done, bytes: r.bytes, failed: r.failed, removed: r.removed, ms: r.ms, rate: r.rate, verified: r.verified, errors: r.errors.slice(0, 20), deletesBlocked: r.deletesBlocked };
       log(`Copied ${r.done} objects (${(r.bytes / 1048576).toFixed(1)} MB) in ${(r.ms / 1000).toFixed(1)} s${r.removed ? `, deleted ${r.removed}` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       for (const e of r.errors.slice(0, 10)) log(`  ✗ ${e.key}: ${e.error}`);
+      if (r.deletesBlocked) log(`✗ Deletes skipped: ${r.deletesBlocked}`);
       if (r.verified) log(`${r.verified.ok ? "Verified" : "Verify failed"}: ${r.verified.detail}`);
-      ok = !ac.signal.aborted && r.failed === 0 && (!r.verified || r.verified.ok);
+      ok = !ac.signal.aborted && r.failed === 0 && !r.deletesBlocked && (!r.verified || r.verified.ok);
       if (ac.signal.aborted) log("Cancelled");
     } catch (e: any) {
       log(`✗ ${e.message}`);
@@ -97,7 +102,7 @@ export function runJob(job: MoverJob, actor: string, dryRun = false) {
     label: job.name, job, dryRun, actor,
     src: { endpoint: job.srcEndpoint, prefix: job.srcPrefix }, dst: { endpoint: job.dstEndpoint, prefix: job.dstPrefix },
     mode: job.mode as "copy" | "mirror", compare: job.compare as Compare, include: parseList(job.include), exclude: parseList(job.exclude),
-    concurrency: job.concurrency, verify: !!job.verify,
+    concurrency: job.concurrency, verify: !!job.verify, bwLimitMbps: job.bwLimitMbps, maxDeletePct: job.maxDeletePct,
   };
   if (job.kind === "app-backup" && job.consistent) {
     const app = repo.getApp(job.app ?? "");

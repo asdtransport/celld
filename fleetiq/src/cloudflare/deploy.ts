@@ -7,6 +7,7 @@ import type { App, AppTarget, Target } from "../db/schema";
 import * as repo from "../lib/repo";
 import { DeployError, parseJsonc, projectDir } from "../services/deploy";
 import { fetchSource } from "../services/source";
+import { runScan, scanLines } from "../compliance/scan";
 import { Cloudflare, CloudflareError } from "./api";
 import { type CfResourceIds, resourceNeeds, toCloudflareConfig } from "./config";
 import * as trepo from "./repo";
@@ -78,6 +79,13 @@ export async function deployToCloudflare(app: App, link: AppTarget, target: Targ
         if (x.code !== 0) throw new DeployError(`extract failed: ${x.stderr.slice(0, 200)}`);
         const r = await findRoot(join(work, "src")); if (!r) throw new DeployError("no wrangler.jsonc in the build");
         root = r;
+      }
+      // The same policy gate as deploys on this server.
+      const scan = await runScan(root, { app: app.name, trigger: "cloudflare", deployment: id, ctx: { sourceKind: opts.from === "git" ? "git" : "current", branch: opts.from === "git" ? opts.ref ?? repo.getSource(app.name)?.ref ?? null : null }, source: `cloudflare:${target.name}`, actor });
+      for (const l of scanLines(scan)) say(l);
+      if (scan.gate.decision === "blocked") {
+        if (!opts.dryRun) { repo.writeAudit({ actor, action: "policy.block", target: app.name, outcome: "denied", detail: `Cloudflare ${target.name}` }); throw new DeployError(`blocked by policy: ${scan.gate.reasons.find((x) => x.blocking)?.message ?? "see the scan"}`, 422); }
+        say("Dry run: a real deploy would be blocked by policy");
       }
       const cfgFile = (await readdir(root)).find((n) => /^wrangler\.jsonc?$/.test(n));
       if (!cfgFile) throw new DeployError("no wrangler.jsonc in the project");

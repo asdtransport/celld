@@ -13,11 +13,16 @@ export interface Connector {
   get(key: string): Promise<ObjData | null>;
   put(key: string, data: ObjData): Promise<void>;
   delete(key: string): Promise<void>;
+  // MD5 (hex) of an object, for stores whose listings carry none (a local folder). Optional.
+  hash?(key: string): Promise<string | null>;
   // Proves we can list and write (writes and deletes a probe object under the prefix).
   test(prefix: string): Promise<{ list: boolean; write: boolean; detail: string }>;
 }
 
-export class MoverError extends Error { constructor(m: string, public status = 400) { super(m); } }
+// status is the HTTP status FleetIQ answers with; retryable says whether trying again can help
+// (network errors, 5xx, throttling) or not (bad keys, missing bucket, no permission).
+export class MoverError extends Error { constructor(m: string, public status = 400, public retryable = false) { super(m); } }
+export const retryableHttp = (s: number) => s >= 500 || s === 408 || s === 429;
 
 // Field definitions drive the console form, the API validation and the MCP tool docs.
 export interface FieldDef { key: string; label: string; secret?: boolean; required?: boolean; placeholder?: string; help?: string; default?: string }

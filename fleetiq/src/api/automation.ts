@@ -6,7 +6,8 @@ import { config } from "../config";
 import * as repo from "../lib/repo";
 import { mintToken, publicToken } from "../lib/tokens";
 import { DeployError, deployFromSource, deploying } from "../services/deploy";
-import { fleetOf } from "../services/fleet";
+import { fleetOf, scaleNodes } from "../services/fleet";
+import { syncLb } from "../services/network";
 import { GithubError, commitStatus, ensureWebhook, webhookStatus } from "../services/github";
 import { startUpdate, updateStatus, versionInfo } from "../services/update";
 import { SourceError, fetchSource, validRepo, verifyGithubSignature } from "../services/source";
@@ -143,7 +144,7 @@ export function automationRoutes(api: Hono) {
     const ref = b.ref ?? src.ref;
     try {
       const d = await deployFromSource(app, {
-        label: `${src.repo}@${ref}`, path: b.path ?? src.path, checks: b.checks ?? !!src.checks,
+        label: `${src.repo}@${ref}`, path: b.path ?? src.path, checks: b.checks ?? !!src.checks, sourceKind: "git", branch: /^[0-9a-f]{40}$/.test(ref) ? null : ref,
         fetch: () => fetchSource(src, ref),
         onCommit: (sha) => { if (!b.repo) repo.setSourceCommit(app.name, sha); },
         report: reporter(consoleUrl(c), app.name, { repo: src.repo, token: (src as any).token ?? null }),
@@ -160,7 +161,7 @@ export function automationRoutes(api: Hono) {
     const data = new Uint8Array(await file.arrayBuffer());
     try {
       const d = await deployFromSource(app, {
-        label: `${file.name} (source upload)`, path: String(form?.get("path") ?? ""), checks: String(form?.get("checks") ?? "true") !== "false",
+        label: `${String(form?.get("label") ?? "").slice(0, 120) || file.name} (source upload)`, path: String(form?.get("path") ?? ""), checks: String(form?.get("checks") ?? "true") !== "false", sourceKind: "upload",
         fetch: async () => ({ tgz: data, commit: null, label: file.name }),
       }, actorOf(c));
       return c.json(c.req.query("wait") ? await waitFor(d.id, 240_000) : d, 202);
@@ -194,13 +195,49 @@ export function automationRoutes(api: Hono) {
       return { name: a.name, managed: !!a.managed, desiredNodes: a.desiredNodes, liveNodes: f?.live ?? 0, version: f?.version ?? null, deploying: deploying(a.name), source: repo.getSource(a.name)?.repo ?? null, routes: repo.listRoutes().filter((r) => r.app === a.name).map((r) => r.host) };
     }));
     return c.json({
-      fleetiq: { build: process.env.BUILD_SHA ?? "dev", version: config.stackVersion || null, consoleUrl: consoleUrl(c), authMode: config.authMode },
+      fleetiq: { build: process.env.BUILD_SHA ?? "dev", version: config.stackVersion || null, consoleUrl: consoleUrl(c), authMode: config.authMode, appDomain: config.appDomain || null },
       bucket: { url: config.bucket, endpoint: config.s3Endpoint || "aws" },
       edge: { url: config.edgeUrl || null }, builder: { image: config.builderImage, memoryMb: config.builderMemoryMb, timeoutMin: config.buildTimeoutMs / 60_000, githubToken: !!config.githubToken },
       nodeImage: config.nodeImage, apps, containers: containers.map((x) => ({ name: x.name, state: x.state, app: x.app ?? x.project })),
       you: identity(c),
     });
   });
+  // ---- Preview deploys: a separate app (own nodes, own data) at <app>-<alias>.<app domain> ----
+  const previewName = (app: string, alias?: string) => `${app}-${(alias || "preview").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "preview"}`.slice(0, 63).replace(/-+$/, "");
+  api.post("/api/apps/:name/preview", async (c) => {
+    const { app, res } = requireApp(c); if (!app) return res;
+    const b = z.object({ alias: z.string().trim().max(40).optional(), nodes: z.number().int().min(1).max(3).default(1) }).parse(await c.req.json().catch(() => ({})));
+    const name = previewName(app.name, b.alias);
+    if (name === app.name) return c.json({ error: "pick another alias" }, 400);
+    let p = repo.getApp(name);
+    const created = !p;
+    if (p && !(p.description ?? "").startsWith(`Preview of ${app.name}`)) return c.json({ error: `${name} exists and isn't a preview of ${app.name}` }, 409);
+    if (!p) {
+      p = repo.createApp({ name, prefix: name, description: `Preview of ${app.name}${b.alias ? ` (${b.alias})` : ""}`, managed: 1, desiredNodes: b.nodes, nodeImage: app.nodeImage, healthPath: app.healthPath, createdBy: actorOf(c) });
+      repo.writeAudit({ actor: actorOf(c), action: "app.create", target: name, outcome: "ok", detail: `preview of ${app.name}` });
+      await scaleNodes(p, b.nodes).catch(() => {}); await syncLb().catch(() => {});
+    }
+    const host = config.appDomain ? `${name}.${config.appDomain}` : null;
+    if (host && !repo.listRoutes().some((r) => r.host === host)) { repo.upsertRoute(host, name); await syncLb().catch(() => {}); }
+    return c.json({ app: name, previewOf: app.name, created, url: host ? `https://${host}` : null, note: "A preview has its own data (empty at first) and its own nodes; remove it with DELETE /api/apps/<app>/preview." }, created ? 201 : 200);
+  });
+  api.delete("/api/apps/:name/preview", async (c) => {
+    const { app, res } = requireApp(c); if (!app) return res;
+    const name = previewName(app.name, c.req.query("alias"));
+    const p = repo.getApp(name);
+    if (!p || !(p.description ?? "").startsWith(`Preview of ${app.name}`)) return c.json({ error: `no preview ${name}` }, 404);
+    await scaleNodes(p, 0).catch(() => {});
+    for (const r of repo.listRoutes().filter((r) => r.app === name)) repo.deleteRoute(r.host);
+    await syncLb().catch(() => {});
+    repo.deleteApp(name);
+    repo.writeAudit({ actor: actorOf(c), action: "app.remove", target: name, outcome: "ok", detail: `preview of ${app.name}; bucket data kept` });
+    return c.json({ ok: true, removed: name });
+  });
+  api.get("/api/apps/:name/previews", (c) => {
+    const { app, res } = requireApp(c); if (!app) return res;
+    return c.json(repo.listApps().filter((a) => (a.description ?? "").startsWith(`Preview of ${app.name}`)).map((a) => ({ app: a.name, url: repo.listRoutes().find((r) => r.app === a.name) ? `https://${repo.listRoutes().find((r) => r.app === a.name)!.host}` : null, createdAt: a.createdAt })));
+  });
+
   api.get("/api/nodes", async (c) => {
     const containers = await listContainers().catch(() => []);
     try { return c.json(await Promise.all(repo.listApps().map(async (a) => ({ app: a.name, ...(await fleetOf(a, { containers, withState: c.req.query("state") === "1" })) })))); }
@@ -242,7 +279,7 @@ export function hookRoutes(app: Hono) {
     const sha = String(p.after ?? "");
     try {
       const d = await deployFromSource(a, {
-        label: `${src.repo}@${sha.slice(0, 7)} (push)`, path: src.path, checks: !!src.checks,
+        label: `${src.repo}@${sha.slice(0, 7)} (push)`, path: src.path, checks: !!src.checks, sourceKind: "git", branch: src.ref,
         fetch: () => fetchSource(src, sha || src.ref), onCommit: (s) => repo.setSourceCommit(name, s),
         report: reporter(config.publicUrl || new URL(c.req.url).origin, name, src),
       }, `github push by ${String(p.pusher?.name ?? "unknown").slice(0, 60)}`);

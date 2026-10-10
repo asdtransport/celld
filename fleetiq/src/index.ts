@@ -4,7 +4,7 @@ import { join, normalize, resolve } from "node:path";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { buildApp } from "./app";
 import { config } from "./config";
-import { DDL } from "./db/ddl";
+import { applySchema } from "./db/ddl";
 import { setDb } from "./db/runtime";
 import * as repo from "./lib/repo";
 import { startLbReconciler, syncLb } from "./services/network";
@@ -14,7 +14,7 @@ import { startScheduler } from "./mover/controller";
 mkdirSync(config.dataDir, { recursive: true });
 const sqlite = new Database(process.env.APP_DB ?? join(config.dataDir, "fleetiq.db"));
 sqlite.exec("PRAGMA journal_mode = WAL;");
-sqlite.exec(DDL);
+applySchema(sqlite);
 setDb(drizzle(sqlite));
 
 // First run: adopt the app the stack already serves, so the LB keeps routing it once FleetIQ takes over.
@@ -54,7 +54,7 @@ Bun.serve({
   idleTimeout: 255, // seconds; deploy uploads and /wait calls run long
   async fetch(req) {
     const u = new URL(req.url);
-    if (u.pathname.startsWith("/api/") || u.pathname.startsWith("/hooks/") || u.pathname === "/mcp" || u.pathname.startsWith("/mcp/")) {
+    if (u.pathname.startsWith("/api/") || u.pathname.startsWith("/hooks/") || u.pathname.startsWith("/cli/") || u.pathname === "/mcp" || u.pathname.startsWith("/mcp/")) {
       const r = await app.fetch(req);
       for (const [k, v] of Object.entries(headers)) if (k !== "content-security-policy") r.headers.set(k, v);
       r.headers.set("cache-control", "no-store");

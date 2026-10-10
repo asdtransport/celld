@@ -12,14 +12,51 @@ import Drawer from "../components/Drawer.astro";
     <div class="actions">
       <button class="btn" type="button" id="diag-btn">Run diagnostics</button>
       <button class="btn" type="button" data-drawer-open="scale" data-operator id="scale-btn" hidden>Scale nodes</button>
-      <button class="btn" type="button" data-drawer-open="deploy" data-operator>Upload a version</button>
+      <a class="btn" id="open-app" href="#" target="_blank" rel="noopener" hidden>Open app ↗</a>
       <button class="btn primary" type="button" id="git-deploy-btn" data-operator hidden>Deploy from Git</button>
     </div>
   </header>
 
   <div id="diag" hidden class="panel" style="margin-bottom:18px"></div>
 
-  <section class="panel">
+  <section class="panel ship">
+    <div class="panel-head"><h2>Ship a change</h2><span class="hint">Every way runs the same scan and policy check before anything goes live</span></div>
+    <div class="ship-grid">
+      <div>
+        <h3>From your terminal</h3>
+        <p>Preview first (its own address and data), then production. Needs Node 18+ or Bun.</p>
+        <pre class="code" id="ship-cli"></pre>
+      </div>
+      <div>
+        <h3>From GitHub</h3>
+        <p id="ship-git">Connect a repo to build on the server, on a button or on every push.</p>
+        <div class="actions"><button class="btn sm" type="button" id="ship-git-btn" data-operator>Connect GitHub</button></div>
+      </div>
+      <div>
+        <h3>Upload a build</h3>
+        <p>A <code>.tar.gz</code> from <code>workiq-pack.sh</code> or any Workers project with its <code>node_modules</code>.</p>
+        <div class="actions"><button class="btn sm" type="button" data-drawer-open="deploy" data-operator>Upload a version</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Deployment history</h2><span class="hint" id="history-hint"></span></div>
+    <div class="table-wrap" id="history"><div class="empty skeleton">Loading history</div></div>
+  </section>
+
+  <div class="grid-2" style="margin-top:18px">
+    <section class="panel">
+      <div class="panel-head"><h2>Security</h2><a class="hint" href="/compliance">Compliance</a></div>
+      <div class="panel-body" id="security"><div class="skeleton">Loading</div></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Previews</h2><span class="hint">Separate copies with their own data</span></div>
+      <div class="table-wrap" id="previews"><div class="empty skeleton">Loading</div></div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:18px">
     <div class="panel-head"><h2>Nodes</h2><span class="hint" id="nodes-hint"></span></div>
     <div class="table-wrap" id="nodes"><div class="empty skeleton">Reading node leases</div></div>
   </section>
@@ -43,11 +80,6 @@ import Drawer from "../components/Drawer.astro";
   <section class="panel" style="margin-top:18px">
     <div class="panel-head"><h2>Source</h2><button class="btn sm" type="button" data-drawer-open="git" data-operator id="git-edit-btn">Connect GitHub</button></div>
     <div class="panel-body" id="source"><div class="skeleton">Loading</div></div>
-  </section>
-
-  <section class="panel" style="margin-top:18px">
-    <div class="panel-head"><h2>Deployment history</h2></div>
-    <div class="table-wrap" id="history"><div class="empty skeleton">Loading history</div></div>
   </section>
 
   <section class="panel" style="margin-top:18px" data-operator>
@@ -125,8 +157,12 @@ import Drawer from "../components/Drawer.astro";
       $("#deploy-name-note").innerHTML = `The project’s wrangler <code>name</code> must be <code>${esc(app.name)}</code>.`;
       renderNodes(app, fleet);
       renderSummary(app, fleet, bindings, routes);
+      const host = (routes ?? []).map((r: any) => r.host).find((h: string) => h !== "*");
+      const open = $<HTMLAnchorElement>("#open-app"); open.hidden = !host; if (host) open.href = `https://${host}`;
+      const origin = location.origin;
+      $("#ship-cli").textContent = `curl -fsSL ${origin}/cli/install.sh | sh\nfleetiq login --url ${origin}\nfleetiq link --app ${app.name}\nfleetiq deploy          # preview\nfleetiq deploy --prod   # production`;
     } catch (e) { errorPanel($("#nodes"), e, load); }
-    loadVersions(); loadHistory(); loadSource().then(loadCf);
+    loadVersions(); loadHistory(); loadSecurity(); loadPreviews(); loadSource().then(loadCf);
   }
 
   // ---- Cloudflare targets ----
@@ -197,12 +233,18 @@ import Drawer from "../components/Drawer.astro";
 
   // ---- Git source ----
   let source: any = null;
+  $("#ship-git-btn").addEventListener("click", () => {
+    if (source) ($("#git-deploy-btn") as HTMLButtonElement).click();
+    else (document.getElementById("git") as HTMLDialogElement).showModal();
+  });
   async function loadSource() {
     const el = $("#source");
     try {
       source = await api<any>(`/api/apps/${encodeURIComponent(name)}/source`);
       $("#git-deploy-btn").hidden = !source;
       $("#git-edit-btn").textContent = source ? "Edit" : "Connect GitHub";
+      $("#ship-git-btn").textContent = source ? "Deploy from Git" : "Connect GitHub";
+      $("#ship-git").innerHTML = source ? `Builds <code>${esc(source.repo)}@${esc(source.ref)}</code>${source.path ? ` (<code>${esc(source.path)}</code>)` : ""} on the server${source.autoDeploy ? ", on every push" : ""}.` : "Connect a repo to build on the server, on a button or on every push.";
       if (!source) { el.innerHTML = `<p style="margin:0;color:var(--ink-2)">Connect a GitHub repo to build and deploy this application from source, by button, API or on every push. FleetIQ builds in a throwaway container, so nothing needs installing on your computer.</p>`; return; }
       const repoLink = /^[\w.-]+\/[\w.-]+$/.test(source.repo) ? `<a href="https://github.com/${esc(source.repo)}/tree/${encodeURIComponent(source.ref)}${source.path ? `/${esc(source.path)}` : ""}" rel="noopener" target="_blank">${esc(source.repo)}</a>` : esc(source.repo);
       el.innerHTML = `<dl class="kv-list">
@@ -346,19 +388,67 @@ import Drawer from "../components/Drawer.astro";
     if (ok) setTimeout(load, 400);
   }
 
+  // The line that says what went wrong, not whatever progress was logged last.
+  function failReason(log: string | null) {
+    const lines = String(log ?? "").trim().split("\n").map((l) => l.trim()).filter(Boolean);
+    let at = -1; lines.forEach((l, i) => { if (/^(Error|error)[:\[]|^build failed|failed:|^unexpected:|blocked by policy|^✗/.test(l)) at = i; });
+    const l = at >= 0 ? lines[at]! : lines.at(-1) ?? "";
+    return l.length > 160 ? `${l.slice(0, 160)}…` : l;
+  }
+
+  async function loadSecurity() {
+    const el = $("#security");
+    try {
+      const comp = await api<any>("/api/compliance");
+      const a = comp.apps.find((x: any) => x.app === name);
+      if (!a?.scanId) { el.innerHTML = `<p style="margin:0 0 12px;color:var(--ink-2)">Not scanned yet. Every deploy is scanned for vulnerable packages, secrets, licenses and config before it goes live.</p><button class="btn sm" type="button" id="sec-scan" data-operator>Scan now</button>`; }
+      else {
+        const v = a.summary?.vulns ?? {};
+        const cls = a.decision === "passed" ? "ok" : a.decision === "warned" ? "warn" : "bad";
+        el.innerHTML = `<p style="margin:0 0 8px"><span class="status ${cls}">${esc({ passed: "Passes the policy", warned: "Passes with warnings", blocked: "Breaks the policy" }[a.decision as string] ?? a.decision)}</span> <span class="sub" style="display:inline">scanned ${esc(ago(a.scannedAt))}${a.liveVersion ? ` · live <code>${esc(short(a.liveVersion, 8))}</code>` : ""}</span></p>
+          <dl class="kv-list"><dt>Vulnerabilities</dt><dd>${v.critical ?? 0} critical · ${v.high ?? 0} high · ${v.moderate ?? 0} moderate · ${v.low ?? 0} low${a.summary?.fixable ? ` <span class="sub" style="display:inline">(${a.summary.fixable} fixable)</span>` : ""}</dd>
+          <dt>Secrets</dt><dd>${a.summary?.secrets ?? 0}</dd><dt>Packages</dt><dd>${a.summary?.packages ?? 0} · ${a.summary?.licensesUnknown ?? 0} without a license</dd>
+          <dt>Backup</dt><dd>${a.backupJobs ? (a.lastBackup ? `last ${esc(ago(a.lastBackup))}` : "never succeeded") : `none · <a href="/mover">set one up</a>`}</dd></dl>
+          ${a.reasons.length ? `<ul class="reasons">${a.reasons.slice(0, 3).map((r: any) => `<li class="${r.blocking ? "bad" : "warn"}">${esc(r.message)}</li>`).join("")}</ul>` : ""}
+          <div class="actions"><a class="btn sm" href="/compliance?scan=${encodeURIComponent(a.scanId)}">Findings</a><button class="btn sm" type="button" id="sec-scan" data-operator>Scan now</button></div>`;
+      }
+      document.getElementById("sec-scan")?.addEventListener("click", async (ev) => {
+        if (await act(ev.currentTarget as HTMLButtonElement, () => api(`/api/apps/${encodeURIComponent(name)}/scan`, { method: "POST", json: {} }), "Scanned")) loadSecurity();
+      });
+      gateOperatorControls(el);
+    } catch (e) { errorPanel(el, e, loadSecurity); }
+  }
+
+  async function loadPreviews() {
+    const el = $("#previews");
+    try {
+      const ps = await api<any[]>(`/api/apps/${encodeURIComponent(name)}/previews`);
+      el.innerHTML = ps.length ? `<table class="data"><tbody>${ps.map((p) => `<tr><td class="main-cell"><a href="/app?name=${encodeURIComponent(p.app)}">${esc(p.app)}</a>${p.url ? `<span class="sub"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url.replace("https://", ""))}</a></span>` : ""}</td>
+        <td style="white-space:nowrap">${esc(ago(p.createdAt))}</td><td class="row-actions"><button class="btn sm danger" type="button" data-operator data-rm="${esc(p.app)}">Remove</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No previews. <code>fleetiq deploy</code> (without <code>--prod</code>) makes one at its own address, with its own empty data.</div>`;
+      el.querySelectorAll<HTMLButtonElement>("[data-rm]").forEach((b) => b.addEventListener("click", async () => {
+        const alias = b.dataset.rm!.slice(name.length + 1);
+        if (!(await confirmAction({ title: `Remove ${b.dataset.rm}?`, text: "Its nodes stop and its address goes away. Its data stays in the bucket.", ok: "Remove preview" }))) return;
+        if (await act(b, () => api(`/api/apps/${encodeURIComponent(name)}/preview?alias=${encodeURIComponent(alias)}`, { method: "DELETE" }), "Preview removed")) loadPreviews();
+      }));
+      gateOperatorControls(el);
+    } catch (e) { errorPanel(el, e, loadPreviews); }
+  }
+
   async function loadHistory() {
     const el = $("#history");
     try {
       const ds = await api<any[]>(`/api/apps/${encodeURIComponent(name)}/deployments`);
       el.innerHTML = ds.length ? `<table class="data"><thead><tr><th>Change</th><th>Result</th><th>When</th></tr></thead><tbody>${
         ds.map((d) => {
-          const reason = d.status === "failed" ? String(d.log ?? "").trim().split("\n").pop() : "";
+          const blocked = d.status === "failed" && /blocked by policy/.test(d.log ?? "");
+          const reason = d.status === "failed" ? failReason(d.log) : "";
           const what = d.kind === "cloudflare" ? `${d.status === "running" ? "Deploying" : d.status === "failed" ? "Couldn’t deploy" : /dry run/.test(d.source ?? "") ? "Checked a deploy" : "Deployed"} to ${esc(d.source ?? "Cloudflare")}${d.version ? ` <code>${esc(short(d.version, 8))}</code>` : ""}` : d.status === "running" ? `Building and deploying ${esc(d.source ?? "")}` : d.status === "failed"
-            ? `${d.kind === "rollback" ? "Rollback" : "Deploy"} of ${esc(d.kind === "rollback" ? short(d.source) : d.source ?? "upload")} rejected`
+            ? `${d.kind === "rollback" ? "Rollback" : "Deploy"} of ${esc(d.kind === "rollback" ? short(d.source) : d.source ?? "upload")} ${blocked ? "blocked by policy" : "rejected"}`
             : d.kind === "rollback" ? `Rolled back <code>${esc(short(d.previousVersion))}</code> to <code>${esc(short(d.version))}</code>`
             : d.previousVersion ? `Deployed <code>${esc(short(d.version))}</code>, replacing <code>${esc(short(d.previousVersion))}</code>` : `Deployed <code>${esc(short(d.version))}</code>, the first version`;
           return `<tr><td>${what}${reason ? `<span class="sub" style="color:var(--bad)">${esc(reason)}</span>` : ""}<span class="sub">by ${esc(d.actor)}${d.source && d.kind === "deploy" && d.status !== "failed" ? `, from ${esc(d.source)}` : ""}</span></td>
-          <td><span class="status ${statusClass(d.status)}">${d.status === "succeeded" ? "Succeeded" : d.status === "failed" ? "Failed" : "Running"}</span></td>
+          <td><span class="status ${blocked ? "warn" : statusClass(d.status)}">${d.status === "succeeded" ? "Succeeded" : blocked ? "Blocked" : d.status === "failed" ? "Failed" : "Running"}</span>${blocked ? `<a class="sub" href="/compliance">Findings and waivers</a>` : ""}</td>
           <td style="white-space:nowrap">${ago(d.startedAt)} <button class="btn sm" type="button" data-log="${esc(d.id)}">Log</button></td></tr>`; }).join("")}</tbody></table>`
         : `<div class="empty">No deployments from FleetIQ yet. Versions deployed with the celld CLI still appear under Versions.</div>`;
       el.querySelectorAll<HTMLButtonElement>("[data-log]").forEach((b) => b.addEventListener("click", () => showLog(b.dataset.log!)));

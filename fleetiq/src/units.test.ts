@@ -50,6 +50,7 @@ test("node spec: private listeners, advertise by container name, labels for owne
 test("celld helpers: jsonl parse, backtraces stripped", () => {
   expect(parseJsonl('noise\n{"a":1}\n\n{"a":2}')).toEqual([{ a: 1 }, { a: 2 }]);
   expect(cleanError("Error: bucket gone\n\nStack backtrace:\n  0: x")).toBe("Error: bucket gone");
+  expect(cleanError("Binding  Resource\nenv.APP (AppData)\nBundled notes (0.1 sec)\nError: conditional write may have committed\n\nCaused by:\n  timeout\nStack backtrace:\n  0: x")).toBe("Error: conditional write may have committed\nCaused by:\n  timeout");
 });
 
 test("node /state is read defensively", () => {

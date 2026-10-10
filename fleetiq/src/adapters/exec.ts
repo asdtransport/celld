@@ -20,5 +20,8 @@ export const run: Runner = (argv, opts) => runner(argv, opts);
 export function cleanError(stderr: string): string {
   const s = stderr.replace(/\x1b\[[0-9;]*m/g, "");
   const cut = s.indexOf("Stack backtrace:");
-  return (cut >= 0 ? s.slice(0, cut) : s).trim().split("\n").filter((l) => l.trim()).slice(0, 12).join("\n");
+  const lines = (cut >= 0 ? s.slice(0, cut) : s).trim().split("\n").filter((l) => l.trim());
+  // celld prints progress (bindings, bundle sizes) before the error: keep the error and what follows it.
+  const err = lines.findIndex((l) => /^(Error|error)(\[|:)/.test(l.trim()));
+  return (err >= 0 ? lines.slice(err, err + 12) : lines.slice(-12)).join("\n");
 }

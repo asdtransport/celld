@@ -9,6 +9,8 @@ import { runBuilder } from "../adapters/docker";
 import { SourceError } from "./source";
 import type { App } from "../db/schema";
 import * as repo from "../lib/repo";
+import { projectRootIn, runScan, scanLines, setScanVersion } from "../compliance/scan";
+import type { GateContext } from "../compliance/policy";
 
 const appDir = (app: string) => resolve(config.dataDir, "apps", app);
 export const projectDir = (app: string) => join(appDir(app), "project");
@@ -125,7 +127,19 @@ function fail(app: App, ctx: DeployCtx, log: string[], actor: string, e: any): D
 }
 
 // Validate, extract and deploy one archive that is already in the release dir.
-async function deployArchive(app: App, ctx: DeployCtx, archive: string, log: string[], actor: string) {
+// Scan a project and apply the policy gate. Throws when the policy blocks the deploy.
+async function gate(app: App, ctx: DeployCtx, root: string, gctx: GateContext, log: string[], actor: string, meta: { source?: string | null; commit?: string | null } = {}) {
+  log.push("Scanning: dependencies, vulnerabilities, licenses, secrets, config"); repo.setDeploymentLog(ctx.id, log.join("\n"));
+  const r = await runScan(root, { app: app.name, trigger: "deploy", ctx: gctx, deployment: ctx.id, source: meta.source ?? null, commit: meta.commit ?? null, actor });
+  log.push(...scanLines(r)); repo.setDeploymentLog(ctx.id, log.join("\n"));
+  if (r.gate.decision === "blocked") {
+    repo.writeAudit({ actor, action: "policy.block", target: app.name, outcome: "denied", detail: r.gate.reasons.filter((x) => x.blocking).map((x) => x.rule).join(", ") });
+    throw new DeployError(`blocked by policy: ${r.gate.reasons.find((x) => x.blocking)?.message ?? "see the scan"}`, 422);
+  }
+  return r.scan.id;
+}
+
+async function deployArchive(app: App, ctx: DeployCtx, archive: string, log: string[], actor: string, scanId?: string | null) {
   const { id, releaseDir, previous } = ctx;
   const listing = await run(["tar", "-tvzf", archive], { timeoutMs: 30_000 });
   if (listing.code !== 0) throw new DeployError("the upload is not a readable .tar.gz archive");
@@ -140,6 +154,8 @@ async function deployArchive(app: App, ctx: DeployCtx, archive: string, log: str
   const cfgFile = (await readdir(root)).find((n) => /^wrangler\.jsonc?$/.test(n))!;
   const name = configName(await Bun.file(join(root, cfgFile)).text());
   if (name !== app.name) throw new DeployError(`wrangler name is "${name}" but this application is "${app.name}" — rename one so they match`);
+  // Uploads are scanned here (Git deploys were scanned from source, before the build).
+  if (scanId === undefined) scanId = await gate(app, ctx, root, { sourceKind: "upload" }, log, actor, { source: repo.getDeployment(id)?.source ?? null });
   log.push(`Project ${root.slice(releaseDir.length + 1)} (${cfgFile})`, `Deploying to ${config.bucket}/${app.prefix}`);
   const cfgPath = join(root, cfgFile);
   const edge = fillEdgeKey(await Bun.file(cfgPath).text(), config.authPublicKeyB64);
@@ -175,6 +191,7 @@ async function deployArchive(app: App, ctx: DeployCtx, archive: string, log: str
   await unlink(projectDir(app.name)).catch(() => {});
   await symlink(root, projectDir(app.name));
   repo.finishDeployment(id, { status: "succeeded", version, log: log.join("\n") });
+  if (scanId) setScanVersion(scanId, version, id);
   const warn = [reloadSummary(nodes), migrateWarn].filter(Boolean).join("; ") || null;
   repo.writeAudit({ actor, action: "deploy", target: app.name, outcome: "ok", detail: `${previous ?? "none"} → ${version}${warn ? `; ${warn}` : ""}` });
   await pruneReleases(app.name, 5);
@@ -200,6 +217,7 @@ export async function deployUpload(app: App, file: File, actor: string) {
 export async function deployFromSource(app: App, opts: {
   label: string; fetch: () => Promise<{ tgz: Uint8Array; commit: string | null; label: string }>;
   path: string; checks: boolean; onCommit?: (sha: string) => void;
+  sourceKind?: "git" | "upload"; branch?: string | null;
   // Report progress somewhere outside (GitHub commit statuses); returns a log line or "".
   report?: (state: "pending" | "success" | "failure", sha: string, description: string) => Promise<string>;
 }, actor: string) {
@@ -214,6 +232,15 @@ export async function deployFromSource(app: App, opts: {
       const src = await opts.fetch();
       log.push(`Source ${src.label} (${(src.tgz.length / 1024 / 1024).toFixed(1)} MB)`);
       if (src.commit) { sha = src.commit; opts.onCommit?.(src.commit); repo.updateDeploymentSource(ctx.id, src.label); await report("pending", `Building and deploying ${app.name}`); }
+      // Scan the source before spending minutes on a build the policy would refuse.
+      const srcTgz = join(ctx.releaseDir, "source.tgz"); const srcDir = join(ctx.releaseDir, "source");
+      await Bun.write(srcTgz, src.tgz); await mkdir(srcDir);
+      const xs = await run(["tar", "-xzf", srcTgz, "-C", srcDir, "--no-same-owner", "--no-same-permissions"], { timeoutMs: 60_000 });
+      if (xs.code !== 0) throw new DeployError(`the source archive could not be read: ${xs.stderr.slice(0, 200)}`);
+      const scanRoot = await projectRootIn(srcDir, opts.path);
+      if (!(await stat(scanRoot).catch(() => null))) throw new DeployError(`folder ${opts.path} is not in the source`);
+      const scanId = await gate(app, ctx, scanRoot, { sourceKind: opts.sourceKind ?? "git", branch: opts.branch ?? null, checks: opts.checks }, log, actor, { source: src.label, commit: src.commit });
+      await rm(srcDir, { recursive: true, force: true }); await rm(srcTgz, { force: true });
       log.push(`Building in a throwaway container (${config.builderImage}${opts.checks ? "" : ", checks skipped"})`); flush();
       const files = [{ name: "src.tgz", data: src.tgz }];
       if (config.builderCaFile) files.push({ name: "ca.pem", data: new Uint8Array(await Bun.file(config.builderCaFile).arrayBuffer()) });
@@ -227,7 +254,7 @@ export async function deployFromSource(app: App, opts: {
       const archive = join(ctx.releaseDir, "build.tgz");
       await Bun.write(archive, b.output);
       log.push(`Built archive ${(b.output.length / 1024 / 1024).toFixed(1)} MB`);
-      const done = await deployArchive(app, ctx, archive, log, actor);
+      const done = await deployArchive(app, ctx, archive, log, actor, scanId);
       await report("success", `${app.name} ${done.version ?? ""} is live${done.warning ? ` (${done.warning})` : ""}`);
       if (sha && opts.report) repo.setDeploymentLog(ctx.id, log.join("\n"));
     } catch (e: any) { await report("failure", String(e.message ?? "deploy failed")); fail(app, ctx, log, actor, e); }

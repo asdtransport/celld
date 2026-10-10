@@ -17,6 +17,7 @@ const Patterns = z.array(z.string().max(200)).max(50).optional();
 const SyncIn = z.object({
   source: Side, destination: Side, mode: z.enum(["copy", "mirror"]).default("copy"), compare: z.enum(["quick", "checksum", "size"]).default("quick"),
   include: Patterns, exclude: Patterns, concurrency: z.number().int().min(1).max(32).default(8), verify: z.boolean().default(true), dryRun: z.boolean().default(false),
+  bwLimitMbps: z.number().int().min(1).max(10_000).nullable().default(null), maxDeletePct: z.number().int().min(0).max(100).default(50),
 });
 const JobIn = SyncIn.omit({ dryRun: true }).extend({ name, everyMinutes: z.number().int().min(5).max(60 * 24 * 31).nullable().default(null), enabled: z.boolean().default(true) });
 const BackupIn = z.object({ endpoint: z.string().min(1), prefix: z.string().max(500).optional(), consistent: z.boolean().default(false), everyMinutes: z.number().int().min(5).max(60 * 24 * 31).nullable().default(null), runNow: z.boolean().default(true) });
@@ -78,8 +79,21 @@ export function moverRoutes(api: Hono) {
   });
   api.post("/api/mover/endpoints/:id/test", async (c) => {
     const b = z.object({ prefix }).parse(await c.req.json().catch(() => ({})));
-    try { const s = resolveSide(c.req.param("id"), b.prefix); return c.json({ endpoint: s.label, ...(await s.conn.test(s.prefix)) }); }
+    try { const s = resolveSide(c.req.param("id"), b.prefix); const t0 = Date.now(); return c.json({ endpoint: s.label, ...(await s.conn.test(s.prefix)), ms: Date.now() - t0, location: (s.conn as any).location ?? null }); }
     catch (e) { return err(c, e); }
+  });
+  // Try settings before saving them (the endpoint form's Test button). For an existing endpoint,
+  // blank or masked secret fields fall back to the saved values.
+  api.post("/api/mover/test-config", async (c) => {
+    const b = z.object({ provider: z.string(), config: z.record(z.string(), z.string()).default({}), prefix, endpoint: z.string().optional() }).parse(await c.req.json());
+    try {
+      const prev = b.endpoint ? mrepo.getEndpoint(b.endpoint) : null;
+      const merged = { ...(prev ? JSON.parse(prev.config) : {}), ...Object.fromEntries(Object.entries(b.config).filter(([, v]) => v !== "" && !v.startsWith("••••"))) };
+      const cfg = validateConfig(b.provider, merged);
+      const conn = connectorFor(b.provider, cfg);
+      const t0 = Date.now(); const r = await conn.test(b.prefix.replace(/^\/+/, ""));
+      return c.json({ endpoint: conn.label, ms: Date.now() - t0, ...r, location: (conn as any).location ?? null });
+    } catch (e) { if (e instanceof MoverError) return c.json({ list: false, write: false, detail: e.message }); throw e; }
   });
   api.get("/api/mover/endpoints/:id/browse", async (c) => {
     const p = c.req.query("prefix") ?? ""; const limit = Math.min(Number(c.req.query("limit") ?? 200), 2000);
@@ -91,11 +105,25 @@ export function moverRoutes(api: Hono) {
     } catch (e) { return err(c, e); }
   });
 
+  // Download one object (browse → click a file). Streams; nothing is buffered here.
+  api.get("/api/mover/endpoints/:id/object", async (c) => {
+    const key = c.req.query("key") ?? "";
+    if (!key || key.split("/").includes("..")) return c.json({ error: "key required" }, 400);
+    try {
+      const s = resolveSide(c.req.param("id"), "");
+      const o = await s.conn.get(s.prefix + key.replace(/^\/+/, ""));
+      if (!o) return c.json({ error: "no such object" }, 404);
+      repo.writeAudit({ actor: actorOf(c), action: "mover.download", target: `${s.label}${key}`, outcome: "ok" });
+      return new Response(o.body as any, { headers: { "content-type": o.contentType || "application/octet-stream", ...(o.size ? { "content-length": String(o.size) } : {}), "content-disposition": `attachment; filename="${key.split("/").pop()!.replace(/["\\\r\n]/g, "_")}"` } });
+    } catch (e) { return err(c, e); }
+  });
+
   // ---- one-off sync ----
   api.post("/api/mover/sync", async (c) => {
     const b = SyncIn.parse(await c.req.json());
     try {
-      const r = startRun({ label: `${b.source.endpoint}:${b.source.prefix || "/"} → ${b.destination.endpoint}:${b.destination.prefix || "/"}`, actor: actorOf(c), dryRun: b.dryRun, src: b.source, dst: b.destination, mode: b.mode, compare: b.compare, include: b.include, exclude: b.exclude, concurrency: b.concurrency, verify: b.verify });
+      const nm = (e: string) => mrepo.getEndpoint(e)?.name ?? e;
+      const r = startRun({ label: `${nm(b.source.endpoint)}:${b.source.prefix || "/"} → ${nm(b.destination.endpoint)}:${b.destination.prefix || "/"}`, actor: actorOf(c), dryRun: b.dryRun, src: b.source, dst: b.destination, mode: b.mode, compare: b.compare, include: b.include, exclude: b.exclude, concurrency: b.concurrency, verify: b.verify, bwLimitMbps: b.bwLimitMbps, maxDeletePct: b.maxDeletePct });
       return c.json(runView(c.req.query("wait") ? await waitRun(r.id, 240_000) : r), 202);
     } catch (e) { return err(c, e); }
   });
@@ -106,7 +134,7 @@ export function moverRoutes(api: Hono) {
     const b = JobIn.parse(await c.req.json());
     try {
       resolveSide(b.source.endpoint, b.source.prefix); resolveSide(b.destination.endpoint, b.destination.prefix);
-      const j = { id: id("job"), name: b.name, kind: "sync", app: null, consistent: 0, srcEndpoint: b.source.endpoint, srcPrefix: b.source.prefix, dstEndpoint: b.destination.endpoint, dstPrefix: b.destination.prefix, mode: b.mode, compare: b.compare, include: b.include?.length ? JSON.stringify(b.include) : null, exclude: b.exclude?.length ? JSON.stringify(b.exclude) : null, concurrency: b.concurrency, verify: b.verify ? 1 : 0, everyMinutes: b.everyMinutes, enabled: b.enabled ? 1 : 0, nextRunAt: b.everyMinutes ? Math.floor(Date.now() / 1000) + b.everyMinutes * 60 : null, createdBy: actorOf(c) };
+      const j = { id: id("job"), name: b.name, kind: "sync", app: null, consistent: 0, srcEndpoint: b.source.endpoint, srcPrefix: b.source.prefix, dstEndpoint: b.destination.endpoint, dstPrefix: b.destination.prefix, mode: b.mode, compare: b.compare, include: b.include?.length ? JSON.stringify(b.include) : null, exclude: b.exclude?.length ? JSON.stringify(b.exclude) : null, concurrency: b.concurrency, verify: b.verify ? 1 : 0, bwLimitMbps: b.bwLimitMbps, maxDeletePct: b.maxDeletePct, everyMinutes: b.everyMinutes, enabled: b.enabled ? 1 : 0, nextRunAt: b.everyMinutes ? Math.floor(Date.now() / 1000) + b.everyMinutes * 60 : null, createdBy: actorOf(c) };
       mrepo.insertJob(j);
       repo.writeAudit({ actor: actorOf(c), action: "mover.job.create", target: b.name, outcome: "ok", detail: `${b.mode}${b.everyMinutes ? `, every ${b.everyMinutes} min` : ""}` });
       return c.json(jobView(mrepo.getJob(j.id)!), 201);
@@ -114,8 +142,8 @@ export function moverRoutes(api: Hono) {
   });
   api.patch("/api/mover/jobs/:id", async (c) => {
     const j = mrepo.getJob(c.req.param("id")); if (!j) return c.json({ error: "no such job" }, 404);
-    const b = z.object({ enabled: z.boolean().optional(), everyMinutes: z.number().int().min(5).max(60 * 24 * 31).nullable().optional(), name: name.optional() }).parse(await c.req.json());
-    mrepo.updateJob(j.id, { ...(b.name ? { name: b.name } : {}), ...(b.enabled !== undefined ? { enabled: b.enabled ? 1 : 0 } : {}), ...(b.everyMinutes !== undefined ? { everyMinutes: b.everyMinutes, nextRunAt: b.everyMinutes ? Math.floor(Date.now() / 1000) + b.everyMinutes * 60 : null } : {}) });
+    const b = z.object({ enabled: z.boolean().optional(), everyMinutes: z.number().int().min(5).max(60 * 24 * 31).nullable().optional(), name: name.optional(), bwLimitMbps: z.number().int().min(1).max(10_000).nullable().optional(), maxDeletePct: z.number().int().min(0).max(100).optional() }).parse(await c.req.json());
+    mrepo.updateJob(j.id, { ...(b.name ? { name: b.name } : {}), ...(b.bwLimitMbps !== undefined ? { bwLimitMbps: b.bwLimitMbps } : {}), ...(b.maxDeletePct !== undefined ? { maxDeletePct: b.maxDeletePct } : {}), ...(b.enabled !== undefined ? { enabled: b.enabled ? 1 : 0 } : {}), ...(b.everyMinutes !== undefined ? { everyMinutes: b.everyMinutes, nextRunAt: b.everyMinutes ? Math.floor(Date.now() / 1000) + b.everyMinutes * 60 : null } : {}) });
     repo.writeAudit({ actor: actorOf(c), action: "mover.job.update", target: j.name, outcome: "ok", detail: Object.keys(b).join(", ") });
     return c.json(jobView(mrepo.getJob(j.id)!));
   });

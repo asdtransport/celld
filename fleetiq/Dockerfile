@@ -18,6 +18,8 @@ COPY . .
 ARG RUN_CHECKS=1
 RUN if [ "$RUN_CHECKS" = 1 ]; then bun run verify && bun test; fi
 RUN cd web && bun run build && test -f dist/index.html
+# The CLI, bundled for Node 18+/Bun; the console serves it at /cli/fleetiq.mjs.
+RUN bun build cli/fleetiq.ts --target=node --outfile=cli/dist/fleetiq.mjs && head -c 2 cli/dist/fleetiq.mjs | grep -q '#!' 
 RUN --mount=type=secret,id=extra_ca,required=false \
     if [ -s /run/secrets/extra_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/extra_ca; fi; \
     rm -rf node_modules && bun install --frozen-lockfile --production
@@ -33,6 +35,7 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/src ./src
 COPY --from=build /app/bin ./bin
 COPY --from=build /app/web/dist ./web/dist
+COPY --from=build /app/cli/dist ./cli/dist
 RUN ESB=$(find /app/node_modules -path '*/@esbuild/*/bin/esbuild' -type f | head -1); test -n "$ESB" && cp "$ESB" /usr/local/bin/esbuild && esbuild --version && celld --version
 ENV NODE_ENV=production BUILD_SHA=${BUILD_SHA} PORT=8790 FLEETIQ_DATA=/data CELLD_ESBUILD=/usr/local/bin/esbuild WEB_DIST=/app/web/dist
 VOLUME ["/data"]

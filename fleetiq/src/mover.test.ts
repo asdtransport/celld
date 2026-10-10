@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { buildApp } from "./app";
 import { config } from "./config";
 import { mintToken } from "./lib/tokens";
-import { execute, filterFn, plan, same } from "./mover/engine";
+import { deleteGuard, execute, filterFn, limiter, plan, same } from "./mover/engine";
+import { AzureBlobConnector, parseConnectionString } from "./mover/azure";
+import { s3Hint } from "./mover/s3";
 import { LocalConnector } from "./mover/local";
 import { redact, validateConfig } from "./mover/providers";
 import type { Connector, ObjData, ObjInfo } from "./mover/types";
@@ -52,7 +54,8 @@ test("execute: retries flaky writes, deletes only after copies succeed, verifies
   // A failed copy leaves destination-only objects alone.
   const d2 = new Mem(); d2.objs.set("d/keep", { data: b("k"), mtime: 1 }); d2.failPut = 99;
   const r2 = await execute({ ...spec, dst: d2 }, await plan({ ...spec, dst: d2 }), { retries: 0 });
-  expect(r2.failed).toBe(25); expect(d2.objs.has("d/keep")).toBe(true);
+  // The same error on every object stops the run early instead of hammering the destination.
+  expect(r2.failed).toBeLessThan(25); expect(r2.errors.at(-1)!.error).toContain("identical failures"); expect(d2.objs.has("d/keep")).toBe(true);
 });
 
 test("local connector round-trips, refuses escaping keys, and skips temp files", async () => {
@@ -112,4 +115,51 @@ test("verify passes when a live source gains objects during the copy, and says s
   const r = await execute(spec, await plan(spec), { verify: true });
   expect(r.verified?.ok).toBe(true);
   expect(r.verified?.detail).toContain("source changed during the copy");
+});
+
+test("mirror refuses to wipe most of a destination, and says why", async () => {
+  const src = new Mem(); const dst = new Mem();
+  src.objs.set("s/only", { data: b("x"), mtime: 1 });
+  for (let i = 0; i < 40; i++) dst.objs.set(`d/k${i}`, { data: b("y"), mtime: 1 });
+  const spec = { src, srcPrefix: "s/", dst, dstPrefix: "d/", mode: "mirror" as const, compare: "quick" as const };
+  const p = await plan(spec);
+  expect(deleteGuard(p)).toContain("40 of 40");
+  const r = await execute(spec, p, {});
+  expect(r.deletesBlocked).toBeTruthy(); expect(r.removed).toBe(0); expect(dst.objs.size).toBe(41);
+  const r2 = await execute(spec, await plan(spec), { maxDeletePct: 100 });
+  expect(r2.removed).toBe(40);
+});
+
+test("checksum compare hashes a local folder; content types come from extensions", async () => {
+  const base = mkdtempSync(join(tmpdir(), "mover-"));
+  const l = new LocalConnector(base, "f");
+  await l.put("a.json", { body: b("{}"), size: 2 }); await l.put("b.bin", { body: b("zz"), size: 2 });
+  expect(await l.hash("a.json")).toBe("99914b932bd37a50b983c5e7c90ae93b");
+  expect((await l.get("a.json"))!.contentType).toBe("application/json");
+  const mem = new Mem();
+  mem.objs.set("a.json", { data: b("{}"), mtime: 0, etag: "99914b932bd37a50b983c5e7c90ae93b" });
+  mem.objs.set("b.bin", { data: b("zz"), mtime: 0, etag: "0".repeat(32) });
+  const p = await plan({ src: mem, srcPrefix: "", dst: l, dstPrefix: "", mode: "copy", compare: "checksum" });
+  expect(p.hashed).toBe(2); expect(p.copy.map((i) => i.rel)).toEqual(["b.bin"]); expect(p.same).toBe(1);
+  // Streamed writes land intact.
+  await l.put("big/s.txt", { body: new Response("streamed body").body!, size: 13 });
+  expect(await Bun.file(join(base, "f/big/s.txt")).text()).toBe("streamed body");
+});
+
+test("bandwidth limit holds the average rate", async () => {
+  const take = limiter(1); const t0 = Date.now();
+  for (let i = 0; i < 4; i++) await take(128 * 1024);
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(370);
+});
+
+test("azure: connection strings, SAS expiry and permission warnings; s3 hints", async () => {
+  expect(parseConnectionString("DefaultEndpointsProtocol=https;AccountName=acme;AccountKey=a2V5;EndpointSuffix=core.windows.net").endpoint).toBe("https://acme.blob.core.windows.net");
+  expect(parseConnectionString("AccountName=devstoreaccount1;AccountKey=a2V5;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;").endpoint).toBe("http://127.0.0.1:10000/devstoreaccount1");
+  expect(() => parseConnectionString("BlobEndpoint=x;SharedAccessSignature=sv=1")).toThrow("SAS");
+  expect(() => new AzureBlobConnector({ sasUrl: "https://a.blob.core.windows.net/?sv=1&sig=x" })).toThrow("container");
+  const old = new AzureBlobConnector({ sasUrl: "http://127.0.0.1:1/acct/c?sv=1&se=2020-01-01T00:00:00Z&sp=rl&sig=x" });
+  const t = await old.test("");
+  expect(t.detail).toContain("expired"); expect(t.detail).toContain("lacks a, c, w, d");
+  expect(s3Hint("AuthorizationHeaderMalformed", "<Region>eu-west-1</Region>")).toContain("eu-west-1");
+  expect(s3Hint("SignatureDoesNotMatch", "")).toContain("secret key");
 });

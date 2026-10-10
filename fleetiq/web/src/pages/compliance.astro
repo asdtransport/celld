@@ -1,0 +1,279 @@
+---
+import Console from "../layouts/Console.astro";
+import Drawer from "../components/Drawer.astro";
+---
+<Console title="Compliance" active="compliance">
+  <header class="page-head">
+    <div>
+      <h1>Compliance</h1>
+      <p>Every deploy is scanned for vulnerable packages, secrets, licenses and risky config, then checked against your policy before it goes live. The controls below are checked against what the platform actually did, mapped to SOC 2, and export as evidence for an audit.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" id="open-policy">Policy</button>
+      <button class="btn primary" type="button" data-drawer-open="evidence">Export evidence</button>
+    </div>
+  </header>
+
+  <div class="score" id="score"><div class="skeleton" style="height:76px"></div></div>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Applications</h2><span class="hint">The version running now, as last scanned</span></div>
+    <div class="table-wrap" id="apps"><div class="empty skeleton">Loading</div></div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><h2>Controls</h2><span class="hint" id="controls-hint">Checked live against deploys, scans, backups and access</span></div>
+    <div id="controls"><div class="empty skeleton">Loading</div></div>
+  </section>
+
+  <div class="grid-2" style="margin-top:18px">
+    <section class="panel">
+      <div class="panel-head"><h2>Recent scans</h2><span class="hint">Deploys and manual scans</span></div>
+      <div class="table-wrap" id="scans"><div class="empty skeleton">Loading</div></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Waivers</h2><span class="hint">Recorded exceptions, with reasons</span></div>
+      <div class="table-wrap" id="waivers"><div class="empty skeleton">Loading</div></div>
+    </section>
+  </div>
+
+  <Drawer id="policy" title="Policy" submit="Save policy" formId="policy-form">
+    <form id="policy-form">
+      <p class="sub" style="margin:0 0 14px" id="policy-meta"></p>
+      <label class="check"><input type="checkbox" name="enforce" /><span>Block deploys that break the policy<small>Off: deploys go through and the problems are recorded as warnings. Useful while a team cleans up.</small></span></label>
+      <h3 class="form-h">Vulnerable packages</h3>
+      <label class="field"><span>Block at</span><select name="vulnSeverity"><option value="critical">Critical</option><option value="high">High and critical</option><option value="moderate">Moderate and above</option><option value="low">Any severity</option><option value="off">Don’t block on vulnerabilities</option></select><small>Packages the app runs with. Advisories come from OSV (GitHub’s advisory database for npm).</small></label>
+      <label class="check"><input type="checkbox" name="vulnIncludeBuild" /><span>Also block on build tooling<small>Packages pinned in sub-folders such as <code>web/</code> or <code>docs/</code> (site generators). They build the app but don’t run in the Worker; they always show as warnings.</small></span></label>
+      <label class="check"><input type="checkbox" name="vulnIncludeDev" /><span>Also block on dev-only packages<small>Test runners, type checkers, wrangler.</small></span></label>
+      <label class="check"><input type="checkbox" name="failIfUnchecked" /><span>Block when advisories can’t be checked<small>If the advisory database is unreachable, block instead of warning.</small></span></label>
+      <h3 class="form-h">Code and config</h3>
+      <label class="check"><input type="checkbox" name="secrets" /><span>Block secrets in code<small>Keys, tokens, private keys, database passwords and .env files in the source or build.</small></span></label>
+      <label class="check"><input type="checkbox" name="configChecks" /><span>Block secrets in wrangler vars<small>Plain-text vars that hold a password or key. They belong in Worker secrets.</small></span></label>
+      <label class="check"><input type="checkbox" name="requireLockfile" /><span>Require a lockfile<small>Without one, versions aren’t pinned and the scan can’t see what will be installed.</small></span></label>
+      <label class="field"><span>Blocked licenses</span><input type="text" name="blockedLicenses" spellcheck="false" placeholder="AGPL-3.0, SSPL-1.0" /><small>SPDX ids, comma-separated. "MIT OR AGPL-3.0" passes (you can choose MIT).</small></label>
+      <h3 class="form-h">Where changes come from</h3>
+      <label class="check"><input type="checkbox" name="requireGitSource" /><span>Only deploy from Git<small>Refuse uploads from a laptop or the CLI’s <code>--dir</code>; every change must be a commit.</small></span></label>
+      <label class="field"><span>Allowed branches</span><input type="text" name="allowedBranches" spellcheck="false" placeholder="(any) e.g. main, release" /></label>
+      <label class="check"><input type="checkbox" name="requireChecks" /><span>Require type check and tests<small>Refuse Git builds that skip them.</small></span></label>
+      <label class="field"><span>Longest waiver (days)</span><input type="number" name="waiverMaxDays" min="1" max="365" /></label>
+    </form>
+  </Drawer>
+
+  <Drawer id="evidence" title="Export evidence" submit="Open report" formId="evidence-form">
+    <form id="evidence-form">
+      <p style="margin:0 0 14px;color:var(--ink-2)">Freezes the controls, the policy, every change with its scan, waivers, backups and restores, API tokens and the activity log for a period. The report prints to PDF; the JSON carries a SHA-256 so a copy can be checked later.</p>
+      <div class="side-grid">
+        <label class="field"><span>From</span><input type="date" name="from" required /></label>
+        <label class="field"><span>To</span><input type="date" name="to" required /></label>
+      </div>
+      <label class="field"><span>Format</span><select name="format"><option value="html">Report (print to PDF)</option><option value="json">JSON (machine-readable)</option></select></label>
+      <div id="exports"></div>
+    </form>
+  </Drawer>
+
+  <Drawer id="scan" title="Scan">
+    <div id="scan-body"></div>
+  </Drawer>
+
+  <Drawer id="waive" title="Record a waiver" submit="Record waiver" formId="waive-form">
+    <form id="waive-form">
+      <div class="notice info" style="margin-bottom:14px">A waiver lets one finding through the gate until it expires. Auditors read the reason; say why it’s acceptable and what’s planned.</div>
+      <div class="side-grid">
+        <label class="field"><span>Kind</span><select name="kind"><option value="vuln">Vulnerability</option><option value="secret">Secret</option><option value="license">License</option><option value="rule">Whole rule</option></select></label>
+        <label class="field"><span>Applies to</span><select name="app" id="waive-app"></select></label>
+      </div>
+      <label class="field"><span>Finding</span><input type="text" name="ref" required spellcheck="false" /><small id="waive-what"></small></label>
+      <label class="field"><span>Reason</span><textarea name="reason" required minlength="10" rows="4" placeholder="e.g. Only reachable through the admin import, which is disabled. Upgrade planned in the next sprint."></textarea></label>
+      <label class="field"><span>Expires in (days)</span><input type="number" name="days" min="1" max="365" value="30" /></label>
+    </form>
+  </Drawer>
+</Console>
+
+<style is:global>
+  .score { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .score .card { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-md); padding: 14px 16px; }
+  .score .card b { display: block; font-size: 28px; font-stretch: 87.5%; font-weight: 660; line-height: 1.1; }
+  .score .card span { color: var(--ink-2); font-size: 13px; }
+  .score .card.pass b { color: var(--ok); } .score .card.warn b { color: var(--warn); } .score .card.fail b { color: var(--bad); }
+  .ctl { display: grid; grid-template-columns: 120px minmax(0, 1fr) 110px; gap: 14px; padding: 13px 18px; border-top: 1px solid var(--rule-soft); align-items: start; }
+  .ctl:first-child { border-top: 0; }
+  .ctl .crit { font-family: var(--mono); font-size: 12px; color: var(--ink-3); padding-top: 2px; }
+  .ctl h3 { font-size: 14px; font-weight: 620; margin: 0 0 2px; }
+  .ctl p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+  .ctl details { margin-top: 6px; font-size: 12.5px; color: var(--ink-3); }
+  .ctl details summary { cursor: pointer; }
+  .ctl details ul { margin: 6px 0 0; padding-left: 18px; }
+  .sev { display: inline-block; min-width: 22px; padding: 1px 6px; border-radius: var(--r-sm); font-size: 12px; font-weight: 650; text-align: center; background: var(--rule-soft); color: var(--ink-2); }
+  .sev.critical { background: var(--bad); color: #fff; } .sev.high { background: var(--bad-wash); color: var(--bad); } .sev.moderate { background: var(--warn-wash); color: #6d4b06; } .sev.low { background: var(--teal-wash); color: var(--teal-ink); }
+  .sev.zero { background: transparent; color: var(--ink-3); font-weight: 450; }
+  .form-h { font-size: 13px; font-weight: 650; margin: 18px 0 10px; color: var(--ink-2); text-transform: none; }
+  .finding-list td { font-size: 13px; }
+  .scope { font-size: 11.5px; color: var(--ink-3); display: block; }
+  @media (max-width: 760px) { .score { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ctl { grid-template-columns: 1fr; gap: 4px; } }
+</style>
+
+<script>
+  import { $, API, act, ago, api, bytes, confirmAction, errorPanel, esc, gateOperatorControls, qs, toast } from "../lib/api";
+  void bytes;
+  let state: any = null;
+  const pill = (d: string | null) => d ? `<span class="status ${d === "passed" || d === "pass" ? "ok" : d === "warned" || d === "warn" ? "warn" : d === "n/a" ? "off" : "bad"}">${esc({ passed: "Passed", warned: "Warnings", blocked: "Blocked", error: "Scan failed", pass: "Pass", warn: "Attention", fail: "Fail", "n/a": "Not yet" }[d] ?? d)}</span>` : `<span class="status off">Not scanned</span>`;
+  const sev = (n: number, cls: string) => `<span class="sev ${n ? cls : "zero"}" title="${esc(cls)}">${n}</span>`;
+  const day = (s: number | null | undefined) => (s ? new Date(s * 1000).toISOString().slice(0, 10) : "—");
+
+  async function load() {
+    try {
+      state = await api<any>("/api/compliance");
+      const s = state.score;
+      $("#score").innerHTML = `
+        <div class="card pass"><b>${s.pass}</b><span>controls passing</span></div>
+        <div class="card warn"><b>${s.warn}</b><span>need attention</span></div>
+        <div class="card fail"><b>${s.fail}</b><span>failing</span></div>
+        <div class="card"><b style="font-size:17px;padding-top:8px">${state.policy.enforce ? `Blocking ${state.policy.vulnSeverity === "off" ? "secrets" : `${esc(state.policy.vulnSeverity)}+`}` : "Warn only"}</b><span>policy · ${state.waivers} active waiver${state.waivers === 1 ? "" : "s"}</span></div>`;
+      $("#controls").innerHTML = state.controls.map((c: any) => `<div class="ctl"><div class="crit">${esc(c.criteria)}<span class="sub">${esc(c.family)}</span></div>
+        <div><h3>${esc(c.title)}</h3><p>${esc(c.detail)}</p>${c.facts.length ? `<details><summary>Evidence (${c.facts.length})</summary><ul>${c.facts.map((f: string) => `<li>${esc(f)}</li>`).join("")}</ul></details>` : ""}</div>
+        <div>${pill(c.status)}</div></div>`).join("");
+      $("#apps").innerHTML = state.apps.length ? `<table class="data"><thead><tr><th>Application</th><th>Gate</th><th title="critical / high / moderate / low">Vulnerabilities</th><th>Secrets</th><th>Packages</th><th>Backup</th><th></th></tr></thead><tbody>${
+        state.apps.map((a: any) => { const v = a.summary?.vulns; return `<tr><td class="main-cell"><a href="/app?name=${encodeURIComponent(a.app)}">${esc(a.app)}</a><span class="sub">${a.liveVersion ? `live <code>${esc(a.liveVersion.slice(0, 12))}</code>` : "not deployed"}${a.scannedAt ? ` · scanned ${esc(ago(a.scannedAt))}` : ""}</span></td>
+          <td>${pill(a.decision)}${a.reasons.length ? `<span class="sub">${esc(a.reasons[0].message.slice(0, 90))}${a.reasons[0].message.length > 90 ? "…" : ""}</span>` : ""}</td>
+          <td style="white-space:nowrap">${v ? `${sev(v.critical, "critical")} ${sev(v.high, "high")} ${sev(v.moderate, "moderate")} ${sev(v.low, "low")}` : "—"}</td>
+          <td>${a.summary ? sev(a.summary.secrets, a.summary.secrets ? "critical" : "zero") : "—"}</td>
+          <td>${a.summary ? `${a.summary.packages}<span class="sub">${a.summary.licensesUnknown} unknown license${a.summary.licensesUnknown === 1 ? "" : "s"}</span>` : "—"}</td>
+          <td>${a.backupJobs ? `${a.lastBackup ? esc(ago(a.lastBackup)) : "never ran"}` : `<span class="status warn">None</span>`}</td>
+          <td class="row-actions">${a.scanId ? `<button class="btn sm" type="button" data-show="${esc(a.scanId)}">Findings</button>` : ""}<button class="btn sm" type="button" data-operator data-scan="${esc(a.app)}">Scan now</button></td></tr>`; }).join("")}</tbody></table>`
+        : `<div class="empty"><strong>No applications yet</strong>Create one and deploy it; every deploy is scanned.</div>`;
+      $("#apps").querySelectorAll<HTMLButtonElement>("[data-show]").forEach((b) => b.addEventListener("click", () => showScan(b.dataset.show!)));
+      $("#apps").querySelectorAll<HTMLButtonElement>("[data-scan]").forEach((b) => b.addEventListener("click", async () => {
+        let r: any; if (!(await act(b, async () => { r = await api(`/api/apps/${encodeURIComponent(b.dataset.scan!)}/scan`, { method: "POST", json: {} }); }, `Scanned ${b.dataset.scan}`))) return;
+        load(); showScan(r.id, r);
+      }));
+      const opts = `<option value="*">All applications</option>${state.apps.map((a: any) => `<option value="${esc(a.app)}">${esc(a.app)}</option>`).join("")}`;
+      $("#waive-app").innerHTML = opts;
+      gateOperatorControls($("#apps"));
+      loadScans(); loadWaivers();
+    } catch (e) { errorPanel($("#controls"), e, load); }
+  }
+
+  async function loadScans() {
+    try {
+      const scans = await api<any[]>("/api/compliance/scans?limit=15");
+      $("#scans").innerHTML = scans.length ? `<table class="data"><tbody>${scans.map((s) => `<tr><td class="main-cell"><strong>${esc(s.app)}</strong><span class="sub">${esc(s.trigger === "deploy" ? "deploy" : s.trigger === "cloudflare" ? "Cloudflare deploy" : "manual scan")} · ${esc(s.source ?? "")}${s.commit ? ` <code>${esc(s.commit.slice(0, 7))}</code>` : ""}</span></td>
+        <td>${pill(s.status)}<span class="sub">${s.summary?.vulns ? `${s.summary.vulns.critical}C ${s.summary.vulns.high}H ${s.summary.vulns.moderate}M · ${s.summary.secrets} secrets` : ""}</span></td><td style="white-space:nowrap">${esc(ago(s.createdAt))}</td>
+        <td class="row-actions"><button class="btn sm" type="button" data-show="${esc(s.id)}">Open</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No scans yet. They run on every deploy, or use Scan now.</div>`;
+      $("#scans").querySelectorAll<HTMLButtonElement>("[data-show]").forEach((b) => b.addEventListener("click", () => showScan(b.dataset.show!)));
+    } catch (e) { errorPanel($("#scans"), e, loadScans); }
+  }
+
+  async function loadWaivers() {
+    try {
+      const ws = await api<any[]>("/api/compliance/waivers");
+      const now = Date.now() / 1000;
+      $("#waivers").innerHTML = ws.length ? `<table class="data"><tbody>${ws.map((w) => `<tr${w.expiresAt && w.expiresAt < now ? ` class="muted"` : ""}><td class="main-cell"><strong>${esc(w.kind)} <code>${esc(w.ref.length > 28 ? `${w.ref.slice(0, 28)}…` : w.ref)}</code></strong><span class="sub">${esc(w.app === "*" ? "all apps" : w.app)} · ${esc(w.reason)}</span></td>
+        <td style="white-space:nowrap">${w.expiresAt && w.expiresAt < now ? "expired" : `until ${day(w.expiresAt)}`}<span class="sub">by ${esc(w.createdBy)}</span></td>
+        <td class="row-actions"><button class="btn sm danger" type="button" data-operator data-revoke="${esc(w.id)}">Revoke</button></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No waivers. Record one from a finding when an exception is acceptable.</div>`;
+      $("#waivers").querySelectorAll<HTMLButtonElement>("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
+        if (!(await confirmAction({ title: "Revoke this waiver?", text: "The finding counts against the policy again from the next deploy.", ok: "Revoke" }))) return;
+        if (await act(b, () => api(`/api/compliance/waivers/${b.dataset.revoke}`, { method: "DELETE" }), "Waiver revoked")) load();
+      }));
+      gateOperatorControls($("#waivers"));
+    } catch (e) { errorPanel($("#waivers"), e, loadWaivers); }
+  }
+
+  async function showScan(id: string, pre?: any) {
+    const dlg = document.getElementById("scan") as HTMLDialogElement; if (!dlg.open) dlg.showModal();
+    $("#scan-body").innerHTML = `<div class="skeleton">Loading</div>`;
+    try {
+      const s = pre ?? (await api<any>(`/api/compliance/scans/${id}`));
+      document.getElementById("scan-title")!.textContent = `${s.app} · ${s.trigger === "deploy" ? "deploy scan" : "scan"} ${new Date(s.createdAt * 1000).toLocaleString()}`;
+      const f = s.findings; const now = s.now ?? s.gate;
+      const vulns = (f?.vulns ?? []) as any[];
+      const scope = (v: any) => (v.dev ? "dev tooling" : v.build ? "build tooling" : "runtime");
+      const blocked = (f?.packages ?? []).filter((p: any) => p.license && state?.policy.blockedLicenses.some((b: string) => p.license.toUpperCase().includes(b.toUpperCase())));
+      const unknown = (f?.packages ?? []).filter((p: any) => !p.license);
+      $("#scan-body").innerHTML = `
+        <p style="margin:0 0 6px">${pill(now?.decision ?? s.status)} <span class="sub" style="display:inline">${esc(s.source ?? "")}${s.commit ? ` · <code>${esc(s.commit.slice(0, 12))}</code>` : ""}${s.version ? ` · live as <code>${esc(s.version)}</code>` : ""}</span></p>
+        ${now?.reasons?.length ? `<ul class="reasons">${now.reasons.map((r: any) => `<li class="${r.blocking ? "bad" : "warn"}">${esc(r.message)}</li>`).join("")}</ul>` : `<p class="sub">Nothing in this scan breaks the policy${now?.waived ? ` (${now.waived} finding${now.waived > 1 ? "s" : ""} waived)` : ""}.</p>`}
+        ${s.status !== (now?.decision ?? s.status) ? `<p class="sub">At scan time the decision was “${esc(s.status)}”; this is under today’s policy and waivers.</p>` : ""}
+        <p class="sub" style="margin:10px 0">${s.summary?.packages ?? 0} packages from ${esc((s.summary?.lockfiles ?? []).join(", ") || "no lockfile")} · ${s.summary?.filesScanned ?? 0} files read${s.summary?.vulnError ? ` · <span style="color:var(--warn)">${esc(s.summary.vulnError)}</span>` : ""}
+          · <a href="${API}/api/compliance/scans/${encodeURIComponent(s.id)}/sbom" download>Download SBOM (CycloneDX)</a></p>
+        <h3 class="form-h">Vulnerabilities (${vulns.length})</h3>
+        ${vulns.length ? `<table class="data finding-list"><tbody>${vulns.map((v) => `<tr><td><span class="sev ${esc(v.severity)}">${esc(v.severity)}</span></td>
+          <td class="main-cell"><strong>${esc(v.package)}@${esc(v.version)}</strong><span class="sub">${esc(v.summary)}</span><span class="scope">${scope(v)}${v.direct ? " · direct dependency" : ""} · <a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.id)}</a>${v.aliases?.length ? ` (${esc(v.aliases.slice(0, 2).join(", "))})` : ""}</span></td>
+          <td style="white-space:nowrap">${v.fixed ? `fixed in <code>${esc(v.fixed)}</code>` : "no fix yet"}</td>
+          <td class="row-actions"><button class="btn sm" type="button" data-operator data-waive="vuln" data-ref="${esc(v.id)}" data-what="${esc(`${v.package}@${v.version}: ${v.summary}`)}">Waive</button></td></tr>`).join("")}</tbody></table>` : `<p class="sub">None known.</p>`}
+        <h3 class="form-h">Secrets (${f?.secrets?.length ?? 0})</h3>
+        ${f?.secrets?.length ? `<table class="data finding-list"><tbody>${f.secrets.map((x: any) => `<tr><td><span class="sev ${x.severity === "high" ? "critical" : "moderate"}">${esc(x.severity)}</span></td><td class="main-cell"><strong>${esc(x.title)}</strong><span class="sub"><code>${esc(x.file)}:${x.line}</code> · ${esc(x.preview)}</span></td>
+          <td class="row-actions"><button class="btn sm" type="button" data-operator data-waive="secret" data-ref="${esc(x.fingerprint)}" data-what="${esc(`${x.title} in ${x.file}:${x.line}`)}">Waive</button></td></tr>`).join("")}</tbody></table>
+          <p class="sub">Treat a found secret as leaked: rotate it, move it to a Worker secret or the server’s environment, then remove it from the code.</p>` : `<p class="sub">None found.</p>`}
+        ${f?.config?.length ? `<h3 class="form-h">Config (${f.config.length})</h3><ul class="reasons">${f.config.map((c: any) => `<li class="${c.severity === "high" ? "bad" : c.severity === "moderate" ? "warn" : ""}">${esc(c.message)}</li>`).join("")}</ul>` : ""}
+        <h3 class="form-h">Licenses</h3>
+        <p class="sub">${blocked.length ? `<span style="color:var(--bad)">${blocked.length} under a blocked license:</span> ${blocked.slice(0, 10).map((p: any) => `${esc(p.name)} (${esc(p.license)})`).join(", ")}. ` : "Nothing under a blocked license. "}${unknown.length ? `${unknown.length} without a declared license: ${unknown.slice(0, 8).map((p: any) => esc(p.name)).join(", ")}${unknown.length > 8 ? "…" : ""}.` : ""}</p>
+        ${f?.missingLockfiles?.length ? `<div class="notice warn" style="margin-top:10px">No lockfile for ${f.missingLockfiles.map((m: string) => `<code>${esc(m)}</code>`).join(", ")}: run <code>bun install</code> and commit the lockfile.</div>` : ""}`;
+      $("#scan-body").querySelectorAll<HTMLButtonElement>("[data-waive]").forEach((b) => b.addEventListener("click", () => openWaiver(b.dataset.waive!, b.dataset.ref!, b.dataset.what ?? "", s.app)));
+      gateOperatorControls($("#scan-body"));
+    } catch (e) { errorPanel($("#scan-body"), e); }
+  }
+
+  function openWaiver(kind: string, ref: string, what: string, app: string) {
+    const f = $<HTMLFormElement>("#waive-form"); f.reset();
+    (f.elements.namedItem("kind") as HTMLSelectElement).value = kind;
+    (f.elements.namedItem("ref") as HTMLInputElement).value = ref;
+    (f.elements.namedItem("app") as HTMLSelectElement).value = app;
+    (f.elements.namedItem("days") as HTMLInputElement).max = String(state?.policy.waiverMaxDays ?? 90);
+    $("#waive-what").textContent = what;
+    (document.getElementById("waive") as HTMLDialogElement).showModal();
+  }
+  $<HTMLFormElement>("#waive-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(ev.target as HTMLFormElement);
+    const body = { kind: String(f.get("kind")), ref: String(f.get("ref")).trim(), app: String(f.get("app")), reason: String(f.get("reason")).trim(), days: Number(f.get("days") || 30) };
+    if (await act(document.querySelector('button[form="waive-form"]'), () => api("/api/compliance/waivers", { method: "POST", json: body }), "Waiver recorded")) {
+      (document.getElementById("waive") as HTMLDialogElement).close(); load();
+    }
+  });
+
+  // ---- policy ----
+  const pform = $<HTMLFormElement>("#policy-form");
+  $("#open-policy").addEventListener("click", () => {
+    const p = state?.policy; if (!p) return;
+    for (const k of ["enforce", "vulnIncludeBuild", "vulnIncludeDev", "failIfUnchecked", "secrets", "configChecks", "requireLockfile", "requireGitSource", "requireChecks"]) (pform.elements.namedItem(k) as HTMLInputElement).checked = !!p[k];
+    (pform.elements.namedItem("vulnSeverity") as HTMLSelectElement).value = p.vulnSeverity;
+    (pform.elements.namedItem("blockedLicenses") as HTMLInputElement).value = p.blockedLicenses.join(", ");
+    (pform.elements.namedItem("allowedBranches") as HTMLInputElement).value = p.allowedBranches.join(", ");
+    (pform.elements.namedItem("waiverMaxDays") as HTMLInputElement).value = String(p.waiverMaxDays);
+    $("#policy-meta").textContent = state.policyMeta ? `Last changed by ${state.policyMeta.updatedBy} ${ago(state.policyMeta.updatedAt)}. Changes are recorded in Activity.` : "Defaults. Changes are recorded in Activity.";
+    (document.getElementById("policy") as HTMLDialogElement).showModal();
+    gateOperatorControls(document.getElementById("policy")!);
+  });
+  pform.addEventListener("submit", async (ev) => {
+    ev.preventDefault(); const f = new FormData(pform);
+    const list = (k: string) => String(f.get(k) || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const body: any = { vulnSeverity: f.get("vulnSeverity"), blockedLicenses: list("blockedLicenses"), allowedBranches: list("allowedBranches"), waiverMaxDays: Number(f.get("waiverMaxDays") || 90) };
+    for (const k of ["enforce", "vulnIncludeBuild", "vulnIncludeDev", "failIfUnchecked", "secrets", "configChecks", "requireLockfile", "requireGitSource", "requireChecks"]) body[k] = f.get(k) === "on";
+    if (!body.enforce && state.policy.enforce && !(await confirmAction({ title: "Stop blocking deploys?", text: "Deploys that break the policy will go live and only be recorded as warnings.", ok: "Switch to warn only" }))) return;
+    if (await act(document.querySelector('button[form="policy-form"]'), () => api("/api/compliance/policy", { method: "PUT", json: body }), "Policy saved")) {
+      (document.getElementById("policy") as HTMLDialogElement).close(); load();
+    }
+  });
+
+  // ---- evidence ----
+  const ef = $<HTMLFormElement>("#evidence-form");
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  (ef.elements.namedItem("to") as HTMLInputElement).value = iso(new Date());
+  (ef.elements.namedItem("from") as HTMLInputElement).value = iso(new Date(Date.now() - 90 * 86_400_000));
+  document.querySelector('[data-drawer-open="evidence"]')?.addEventListener("click", async () => {
+    try {
+      const ex = await api<any[]>("/api/compliance/exports");
+      $("#exports").innerHTML = ex.length ? `<h3 class="form-h">Earlier exports</h3><table class="data"><tbody>${ex.slice(0, 8).map((x) => `<tr><td>${day(x.periodFrom)} → ${day(x.periodTo)}<span class="sub">${esc(x.format)} by ${esc(x.createdBy)} ${esc(ago(x.createdAt))}</span></td><td><code title="${esc(x.sha256)}">${esc(x.sha256.slice(0, 12))}…</code></td></tr>`).join("")}</tbody></table>` : "";
+    } catch { /* optional */ }
+  });
+  ef.addEventListener("submit", (ev) => {
+    ev.preventDefault(); const f = new FormData(ef);
+    const to = new Date(`${f.get("to")}T23:59:59Z`).toISOString();
+    const url = `${API}/api/compliance/evidence?from=${encodeURIComponent(`${f.get("from")}T00:00:00Z`)}&to=${encodeURIComponent(to)}&format=${f.get("format")}`;
+    window.open(url, "_blank", "noopener");
+    toast("Evidence opened in a new tab"); (document.getElementById("evidence") as HTMLDialogElement).close();
+  });
+
+  load().then(() => { const sid = qs("scan"); if (sid) showScan(sid); });
+</script>

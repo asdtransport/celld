@@ -42,7 +42,8 @@ import Drawer from "../components/Drawer.astro";
       block("Claude (claude.ai, desktop, mobile)", "Settings → Connectors → Add custom connector, with this URL. The token is part of the URL, so treat the URL as a password.", `${origin}/mcp/t/fiq_…`),
       block("Claude Code", "Adds FleetIQ’s tools (deploy, scale, routes, data, logs) to Claude Code.", `claude mcp add --transport http fleetiq ${origin}/mcp \\\n  --header "Authorization: Bearer fiq_…"`),
       block("HTTP API", `Send the token as a bearer header. Every endpoint is described in the <a href="/api/openapi.json">OpenAPI document</a>.`, `curl -H "Authorization: Bearer fiq_…" ${origin}/api/system`),
-      block("Command line", "The <code>fleetiq</code> script ships in the stack bundle (<code>fleetiq/bin/fleetiq</code>). It needs curl.", `export FLEETIQ_URL=${origin} FLEETIQ_TOKEN=fiq_…\nfleetiq status\nfleetiq deploy my-app --git`),
+      block("Command line", "Install <code>fleetiq</code> from this console (Node 18+ or Bun), sign in, then deploy from a project folder: a preview first, then production. On Windows: <code>irm " + origin + "/cli/install.ps1 | iex</code>.", `curl -fsSL ${origin}/cli/install.sh | sh\nfleetiq login --url ${origin}\nfleetiq init            # in your project\nfleetiq deploy          # preview\nfleetiq deploy --prod   # production`),
+      block("CI (GitHub Actions and others)", "Use a token with an expiry as a secret. <code>--json</code> prints the result; the exit code is 2 when the policy blocks the deploy.", `curl -fsSL ${origin}/cli/install.sh | sh\nFLEETIQ_URL=${origin} FLEETIQ_TOKEN=\${{ secrets.FLEETIQ_TOKEN }} \\\n  fleetiq deploy --prod --app my-app --json`),
     ].join("");
     $("#connect").querySelectorAll<HTMLElement>(".copyable").forEach((el) => el.addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(el.textContent ?? ""); toast("Copied"); } catch { /* selection still works */ }
@@ -90,5 +91,10 @@ import Drawer from "../components/Drawer.astro";
   });
 
   me().then((m) => { if (m.via === "token") document.querySelector<HTMLButtonElement>('[data-drawer-open="new-token"]')?.setAttribute("hidden", ""); }).catch(() => {});
+  // `fleetiq login` opens /access?new=cli: start a token for this computer's CLI.
+  if (new URLSearchParams(location.search).get("new") === "cli") {
+    const f = document.getElementById("token-form") as HTMLFormElement | null;
+    if (f) { (f.elements.namedItem("name") as HTMLInputElement).value = "CLI"; (f.elements.namedItem("role") as HTMLSelectElement).value = "operator"; (document.getElementById("new-token") as HTMLDialogElement)?.showModal(); }
+  }
   connect(); load();
 </script>

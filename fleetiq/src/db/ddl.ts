@@ -13,5 +13,26 @@ const tables: string[] = [
   `CREATE TABLE IF NOT EXISTS targets (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, config TEXT NOT NULL, created_by TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
   `CREATE TABLE IF NOT EXISTS app_targets (app TEXT NOT NULL, target TEXT NOT NULL, worker_name TEXT NOT NULL, hostname TEXT, access INTEGER NOT NULL DEFAULT 1, allow TEXT, health_path TEXT NOT NULL DEFAULT '/api/health', resources TEXT, access_aud TEXT, url TEXT, last_version TEXT, last_deploy_at INTEGER, updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (app, target));`,
   `CREATE TABLE IF NOT EXISTS app_secrets (app TEXT PRIMARY KEY, migrate_token TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
+  // ---- compliance ----
+  `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_by TEXT, updated_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
+  `CREATE TABLE IF NOT EXISTS scans (id TEXT PRIMARY KEY, app TEXT NOT NULL, deployment TEXT, version TEXT, trigger TEXT NOT NULL, source TEXT, source_kind TEXT, commit_sha TEXT, status TEXT NOT NULL, summary TEXT, findings TEXT, sbom TEXT, gate TEXT, actor TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
+  `CREATE INDEX IF NOT EXISTS scans_app ON scans(app, created_at);`,
+  `CREATE TABLE IF NOT EXISTS waivers (id TEXT PRIMARY KEY, app TEXT NOT NULL DEFAULT '*', kind TEXT NOT NULL, ref TEXT NOT NULL, reason TEXT NOT NULL, expires_at INTEGER, created_by TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()), revoked_at INTEGER, revoked_by TEXT);`,
+  `CREATE TABLE IF NOT EXISTS intel_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, fetched_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
+  `CREATE TABLE IF NOT EXISTS evidence_exports (id TEXT PRIMARY KEY, period_from INTEGER NOT NULL, period_to INTEGER NOT NULL, sha256 TEXT NOT NULL, format TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));`,
 ];
 export const DDL = tables.join("\n");
+
+// Columns added after a table first shipped. applySchema adds whichever are missing, so an
+// upgraded server keeps its data and gains the new fields.
+export const COLUMNS: [table: string, column: string, decl: string][] = [
+  ["mover_jobs", "bw_limit_mbps", "INTEGER"],
+  ["mover_jobs", "max_delete_pct", "INTEGER NOT NULL DEFAULT 50"],
+];
+export function applySchema(db: { exec(sql: string): void; query(sql: string): { all(): unknown[] } }) {
+  db.exec(DDL);
+  for (const [t, c, decl] of COLUMNS) {
+    const cols = (db.query(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name);
+    if (!cols.includes(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${decl}`);
+  }
+}

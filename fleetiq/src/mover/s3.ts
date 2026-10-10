@@ -1,15 +1,30 @@
 import { AwsClient } from "aws4fetch";
-import { type Connector, MoverError, type ObjData, type ObjInfo, readAll } from "./types";
+import { type Connector, MoverError, type ObjData, type ObjInfo, readAll, retryableHttp } from "./types";
 
 // Any S3-compatible store. Path-style addressing works everywhere except AWS buckets that need
 // virtual-hosted style (set pathStyle false). Large objects go up in 16 MiB multipart parts.
 export interface S3Config { endpoint: string; region: string; bucket: string; accessKeyId: string; secretAccessKey: string; pathStyle: boolean; label?: string }
 
 const PART = 16 * 1024 * 1024;
-const SINGLE_MAX = 64 * 1024 * 1024;
+const SINGLE_MAX = PART; // bigger objects stream up in parts, so memory stays ~16 MiB per transfer
 const enc = (k: string) => k.split("/").map(encodeURIComponent).join("/");
 const unxml = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 const tag = (s: string, t: string) => unxml(new RegExp(`<${t}>([\\s\\S]*?)</${t}>`).exec(s)?.[1] ?? "");
+
+// What each S3 error usually means, in words a person can act on.
+export function s3Hint(code: string, body: string): string {
+  switch (code) {
+    case "NoSuchBucket": return "the bucket doesn't exist: check its name (and the account or region)";
+    case "InvalidAccessKeyId": return "the access key ID isn't recognised by this provider";
+    case "SignatureDoesNotMatch": return "the secret key doesn't match the access key";
+    case "AuthorizationHeaderMalformed": { const r = tag(body, "Region"); return r ? `the bucket lives in region ${r}; set that region` : "the region is wrong for this bucket"; }
+    case "PermanentRedirect": case "IllegalLocationConstraintException": return `the bucket is in another region${tag(body, "Endpoint") ? ` (endpoint ${tag(body, "Endpoint")})` : ""}; set its region`;
+    case "AccessDenied": return "the key isn't allowed to do this: it needs list, read, write and delete on the bucket";
+    case "RequestTimeTooSkewed": return "this server's clock is off by more than 15 minutes";
+    case "InvalidBucketName": return "that isn't a valid bucket name";
+    default: return "";
+  }
+}
 
 export class S3Connector implements Connector {
   readonly kind = "s3";
@@ -20,18 +35,20 @@ export class S3Connector implements Connector {
     if (!c.endpoint || !c.bucket) throw new MoverError("endpoint and bucket are required");
     this.aws = new AwsClient({ accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey, region: c.region || "auto", service: "s3" });
     const ep = c.endpoint.replace(/\/+$/, "");
-    this.base = c.pathStyle ? `${ep}/${c.bucket}` : ep.replace("://", `://${c.bucket}.`);
+    // Bucket names with dots break TLS on virtual-hosted URLs, so they always go path style.
+    this.base = c.pathStyle || c.bucket.includes(".") ? `${ep}/${c.bucket}` : ep.replace("://", `://${c.bucket}.`);
     this.label = c.label ?? `s3://${c.bucket}`;
   }
   private url(key = "") { return `${this.base}/${enc(key)}`; }
   private async req(url: string, init: RequestInit = {}, what = "request") {
-    const r = await this.aws.fetch(url, init).catch((e) => { throw new MoverError(`${this.label}: ${what} failed: ${e.message}`, 502); });
+    const r = await this.aws.fetch(url, init).catch((e) => { throw new MoverError(`${this.label}: ${what} failed: ${e.message}`, 502, true); });
     return r;
   }
   private async fail(r: Response, what: string): Promise<never> {
     const body = await r.text().catch(() => "");
     const code = tag(body, "Code"); const msg = tag(body, "Message");
-    throw new MoverError(`${this.label}: ${what}: HTTP ${r.status}${code ? ` ${code}` : ""}${msg ? ` — ${msg}` : ""}`, r.status === 403 || r.status === 401 ? 403 : 502);
+    const hint = s3Hint(code, body);
+    throw new MoverError(`${this.label}: ${what}: HTTP ${r.status}${code ? ` ${code}` : ""}${hint ? ` — ${hint}` : msg ? ` — ${msg}` : ""}`, r.status === 403 || r.status === 401 ? 403 : r.status === 404 ? 404 : 502, retryableHttp(r.status));
   }
 
   async *list(prefix: string): AsyncIterable<ObjInfo> {
@@ -99,6 +116,7 @@ export class S3Connector implements Connector {
   async delete(key: string): Promise<void> {
     const r = await this.req(this.url(key), { method: "DELETE" }, `delete ${key}`);
     if (!r.ok && r.status !== 404) await this.fail(r, `delete ${key}`);
+    else await r.body?.cancel();
   }
 
   async test(prefix: string) {

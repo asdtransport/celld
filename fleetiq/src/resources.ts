@@ -4,6 +4,8 @@ import { automationRoutes, hookRoutes } from "./api/automation";
 import { mcpRoutes } from "./api/catalog";
 import { moverRoutes } from "./api/mover";
 import { targetRoutes } from "./api/targets";
+import { complianceRoutes } from "./api/compliance";
+import { cliRoutes } from "./api/cli";
 import { dataRoutes } from "./api/data";
 import { platformRoutes } from "./api/platform";
 import { authMiddleware } from "./auth";
@@ -20,6 +22,8 @@ export const registerRoutes = (app: Hono) => {
   automationRoutes(app);
   moverRoutes(app);
   targetRoutes(app);
+  complianceRoutes(app);
   hookRoutes(app);
   mcpRoutes(app);
+  cliRoutes(app);
 };

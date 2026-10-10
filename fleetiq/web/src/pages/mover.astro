@@ -9,7 +9,7 @@ import Drawer from "../components/Drawer.astro";
       <p>Copy data between this server and any cloud: Cloudflare R2, AWS, Railway, Azure and other S3-compatible stores. Each copy only moves what changed, can mirror deletions, verifies the result, and can run on a schedule.</p>
     </div>
     <div class="actions">
-      <button class="btn" type="button" data-drawer-open="endpoint" data-operator>Add endpoint</button>
+      <button class="btn" type="button" id="add-ep" data-operator>Add endpoint</button>
       <button class="btn" type="button" data-drawer-open="sync" data-operator>Copy once</button>
       <button class="btn primary" type="button" data-drawer-open="job" data-operator>New job</button>
     </div>
@@ -42,6 +42,8 @@ import Drawer from "../components/Drawer.astro";
       <label class="field"><span>Provider</span><select name="provider" id="ep-provider"></select><small id="ep-note"></small></label>
       <div id="ep-fields"></div>
       <label class="field"><span>Root folder</span><input type="text" name="prefix" spellcheck="false" placeholder="(bucket root)" /><small>Everything this endpoint reads or writes stays under this folder.</small></label>
+      <input type="hidden" name="id" />
+      <div class="test-row"><button class="btn" type="button" id="ep-test-btn">Test connection</button><span class="sub">Lists, writes and deletes a small probe file. Nothing else is touched.</span></div>
       <div id="ep-test"></div>
     </form>
   </Drawer>
@@ -92,10 +94,18 @@ import Drawer from "../components/Drawer.astro";
 </Console>
 
 <script>
-  import { $, act, ago, api, bytes, confirmAction, errorPanel, esc, gateOperatorControls, statusClass, toast, when } from "../lib/api";
+  import { $, API, act, ago, api, bytes, confirmAction, errorPanel, esc, gateOperatorControls, statusClass, toast, when } from "../lib/api";
   let providers: any[] = []; let endpoints: any[] = []; let apps: any[] = [];
   const epName = (id: string) => (id === "fleet" ? "Fleet bucket" : endpoints.find((e) => e.id === id)?.name ?? id);
-  const where = (e: any) => { const c = e.config; return c.bucket ? `${c.bucket}` : c.folder ? `/data/mover/${c.folder}` : c.sasUrl ? "container (SAS)" : ""; };
+  const where = (e: any) => { const c = e.config; return c.bucket ? `${c.bucket}` : c.folder ? `/data/mover/${c.folder}` : c.container ? `container ${c.container}` : c.sasUrl ? "container (SAS)" : ""; };
+  const dur = (sec: number | null | undefined) => sec == null ? "" : sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+  const rate = (bps?: number) => (bps ? `${bytes(bps)}/s` : "");
+  const testHtml = (t: any) => {
+    const ok = t.list && t.write; const warn = /warning|expires/i.test(t.detail ?? "");
+    return `<div class="notice ${ok ? (warn ? "warn" : "ok") : "bad"}" style="margin-top:12px"><strong>${ok ? "Connected" : "Can’t use this yet"}</strong>
+      <ul class="checks"><li class="${t.list ? "ok" : "bad"}">List objects</li><li class="${t.write ? "ok" : "bad"}">Write and delete</li></ul>
+      ${t.detail && t.detail !== "list and write OK" ? `<p>${esc(t.detail)}</p>` : ""}${t.location ? `<p class="sub">On this server: <code>${esc(t.location)}</code> inside the FleetIQ container (its data volume).</p>` : ""}${t.ms ? `<p class="sub">${t.ms} ms</p>` : ""}</div>`;
+  };
   const runStatus = (r: any) => {
     const s = r.status; const cls = s === "succeeded" || s === "planned" ? "ok" : s === "running" || s === "planning" ? "warn" : s === "cancelled" ? "off" : "bad";
     const word = { succeeded: "Done", planned: "Planned", running: "Copying", planning: "Listing", failed: "Failed", cancelled: "Cancelled" }[s as string] ?? s;
@@ -103,9 +113,9 @@ import Drawer from "../components/Drawer.astro";
   };
   const summary = (r: any) => {
     const st = r.stats ?? {}; const p = st.plan; const res = st.result; const pr = st.progress;
-    if (r.status === "running" && pr) return `${pr.done} of ${pr.total} · ${bytes(pr.bytes)} of ${bytes(pr.totalBytes)}<div class="bar"><i style="width:${pr.totalBytes ? Math.round((pr.bytes / pr.totalBytes) * 100) : pr.total ? Math.round((pr.done / pr.total) * 100) : 100}%"></i></div>`;
-    if (res) return `${res.copied} copied (${bytes(res.bytes)})${res.removed ? `, ${res.removed} deleted` : ""}${res.failed ? `, <span style="color:var(--bad)">${res.failed} failed</span>` : ""}${res.verified ? `, ${res.verified.ok ? "verified" : "<span style='color:var(--bad)'>verify failed</span>"}` : ""}`;
-    if (p) return `${p.copy} to copy (${bytes(p.bytes)}), ${p.remove} to delete, ${p.same} in sync`;
+    if (r.status === "running" && pr) return `${pr.done} of ${pr.total} · ${bytes(pr.bytes)} of ${bytes(pr.totalBytes)}${pr.rate ? ` · ${rate(pr.rate)}` : ""}${pr.etaSec ? ` · about ${dur(pr.etaSec)} left` : ""}<div class="bar"><i style="width:${pr.totalBytes ? Math.round((pr.bytes / pr.totalBytes) * 100) : pr.total ? Math.round((pr.done / pr.total) * 100) : 100}%"></i></div>`;
+    if (res) return `${res.copied} copied (${bytes(res.bytes)}${res.rate && res.bytes > 1048576 ? `, ${rate(res.rate)}` : ""})${res.removed ? `, ${res.removed} deleted` : ""}${res.deletesBlocked ? `, <span style="color:var(--bad)">deletes blocked by the safety limit</span>` : ""}${res.failed ? `, <span style="color:var(--bad)">${res.failed} failed</span>` : ""}${res.verified ? `, ${res.verified.ok ? "verified" : "<span style='color:var(--bad)'>verify failed</span>"}` : ""}`;
+    if (p) return `${p.copy} to copy (${bytes(p.bytes)}), ${p.remove} to delete, ${p.same} in sync${p.deletesBlocked ? ` · <span style="color:var(--bad)">deletes over the safety limit</span>` : ""}`;
     return "";
   };
 
@@ -118,13 +128,24 @@ import Drawer from "../components/Drawer.astro";
       <label class="field"><span>Folder</span><input type="text" name="dstPrefix" spellcheck="false" placeholder="(root)" /></label></div>
       <label class="field"><span>Mode</span><select name="mode"><option value="copy">Copy: add and update, never delete</option><option value="mirror">Mirror: also delete what the source doesn’t have</option></select></label>
       <label class="field"><span>Compare by</span><select name="compare"><option value="quick">Size and time (fast, like rsync)</option><option value="checksum">Checksum where both sides have one</option><option value="size">Size only</option></select></label>
-      <label class="field"><span>Skip</span><input type="text" name="exclude" spellcheck="false" placeholder="**/*.tmp, cache/**" /><small>Comma-separated patterns. <code>*</code> stays within a folder, <code>**</code> crosses folders.</small></label>`;
+      <details class="advanced"><summary>More options</summary>
+        <label class="field"><span>Only copy</span><input type="text" name="include" spellcheck="false" placeholder="(everything) e.g. data/**, *.sqlite" /><small>Comma-separated patterns. <code>*</code> stays within a folder, <code>**</code> crosses folders.</small></label>
+        <label class="field"><span>Skip</span><input type="text" name="exclude" spellcheck="false" placeholder="**/*.tmp, cache/**" /></label>
+        <div class="side-grid">
+          <label class="field"><span>Speed limit (MB/s)</span><input type="number" name="bw" min="1" max="10000" placeholder="no limit" /><small>Keeps a client’s link usable during business hours.</small></label>
+          <label class="field"><span>Parallel transfers</span><input type="number" name="concurrency" min="1" max="32" value="8" /></label>
+        </div>
+        <label class="field"><span>Mirror delete limit (%)</span><input type="number" name="maxDel" min="0" max="100" value="50" /><small>Mirror refuses to delete more than this share of the destination (more than 10 objects), in case the source is wrong or empty. 100 turns it off.</small></label>
+      </details>`;
   }
   const sidesBody = (f: FormData) => ({
     source: { endpoint: String(f.get("srcEndpoint")), prefix: String(f.get("srcPrefix") || "").trim() },
     destination: { endpoint: String(f.get("dstEndpoint")), prefix: String(f.get("dstPrefix") || "").trim() },
     mode: String(f.get("mode")), compare: String(f.get("compare")),
+    include: String(f.get("include") || "").split(",").map((s) => s.trim()).filter(Boolean),
     exclude: String(f.get("exclude") || "").split(",").map((s) => s.trim()).filter(Boolean),
+    bwLimitMbps: f.get("bw") ? Number(f.get("bw")) : null,
+    concurrency: Number(f.get("concurrency") || 8), maxDeletePct: Number(f.get("maxDel") ?? 50),
   });
 
   async function load() {
@@ -136,7 +157,7 @@ import Drawer from "../components/Drawer.astro";
         <tr><td class="main-cell"><strong>Fleet bucket</strong><span class="sub">built in · this server</span></td><td><span class="sub">Each app under its name</span></td><td class="row-actions"><button class="btn sm" type="button" data-browse="fleet">Browse</button></td></tr>
         ${endpoints.map((e) => `<tr><td class="main-cell"><strong>${esc(e.name)}</strong><span class="sub">${esc(e.providerLabel)}</span></td>
           <td><code>${esc(where(e))}${e.prefix ? `/${esc(e.prefix)}` : ""}</code></td>
-          <td class="row-actions"><button class="btn sm" type="button" data-test="${esc(e.id)}">Test</button><button class="btn sm" type="button" data-browse="${esc(e.id)}">Browse</button><button class="btn sm danger" type="button" data-operator data-del-ep="${esc(e.id)}" data-name="${esc(e.name)}">Remove</button></td></tr>`).join("")}</tbody></table>
+          <td class="row-actions"><button class="btn sm" type="button" data-test="${esc(e.id)}">Test</button><button class="btn sm" type="button" data-browse="${esc(e.id)}">Browse</button><button class="btn sm" type="button" data-operator data-edit-ep="${esc(e.id)}">Edit</button><button class="btn sm danger" type="button" data-operator data-del-ep="${esc(e.id)}" data-name="${esc(e.name)}">Remove</button></td></tr>`).join("")}</tbody></table>
         ${endpoints.length ? "" : `<div class="empty">Add the client’s cloud storage, or a folder on this server, to copy to or from.</div>`}`;
       $("#apps").innerHTML = apps.length ? `<table class="data"><thead><tr><th>Application</th><th>Live nodes</th><th></th></tr></thead><tbody>${
         apps.map((a) => `<tr><td class="main-cell"><a href="/app?name=${encodeURIComponent(a.name)}">${esc(a.name)}</a><span class="sub">${a.managed ? "nodes run by FleetIQ" : "nodes run outside FleetIQ (live copy only)"}</span></td>
@@ -201,6 +222,7 @@ import Drawer from "../components/Drawer.astro";
         <pre class="log" style="max-height:45vh;margin-top:10px">${esc(r.log || "Starting…")}</pre>
         ${sample ? `<h3 style="font-size:13px;margin:14px 0 6px">Would copy (first ${sample.copy.length})</h3><pre class="log" style="max-height:25vh">${esc(sample.copy.map((i: any) => `${i.reason === "new" ? "+" : "~"} ${i.rel}  ${bytes(i.size)}`).join("\n") || "nothing")}</pre>
           ${sample.remove.length ? `<h3 style="font-size:13px;margin:14px 0 6px">Would delete</h3><pre class="log">${esc(sample.remove.map((k: string) => `- ${k}`).join("\n"))}</pre>` : ""}` : ""}
+        ${st.result?.deletesBlocked || st.plan?.deletesBlocked ? `<div class="notice warn" style="margin-top:12px">${esc(st.result?.deletesBlocked ?? st.plan.deletesBlocked)}</div>` : ""}
         ${st.result?.errors?.length ? `<h3 style="font-size:13px;margin:14px 0 6px">Errors</h3><pre class="log">${esc(st.result.errors.map((e: any) => `${e.key}: ${e.error}`).join("\n"))}</pre>` : ""}`;
       document.getElementById("cancel-run")?.addEventListener("click", () => api(`/api/mover/runs/${id}/cancel`, { method: "POST" }).then(() => toast("Cancelling")));
       if (!["running", "planning"].includes(r.status) || !dlg.open) { loadRuns(); loadJobs(); return; }
@@ -211,8 +233,9 @@ import Drawer from "../components/Drawer.astro";
   function wire() {
     $("#endpoints").querySelectorAll<HTMLButtonElement>("[data-test]").forEach((b) => b.addEventListener("click", async () => {
       let r: any; if (!(await act(b, async () => { r = await api(`/api/mover/endpoints/${b.dataset.test}/test`, { method: "POST", json: {} }); }, "Tested"))) return;
-      toast(r.list && r.write ? `${r.endpoint}: can list and write` : `${r.endpoint}: ${r.detail}`, r.list && r.write ? "ok" : "bad");
+      toast(r.list && r.write ? `${r.endpoint}: can list and write${/warning/i.test(r.detail) ? ` (${r.detail})` : ""}` : `${r.endpoint}: ${r.detail}`, r.list && r.write ? "ok" : "bad");
     }));
+    $("#endpoints").querySelectorAll<HTMLButtonElement>("[data-edit-ep]").forEach((b) => b.addEventListener("click", () => openEndpoint(endpoints.find((e) => e.id === b.dataset.editEp))));
     $("#endpoints").querySelectorAll<HTMLButtonElement>("[data-browse]").forEach((b) => b.addEventListener("click", () => browse(b.dataset.browse!, "")));
     $("#endpoints").querySelectorAll<HTMLButtonElement>("[data-del-ep]").forEach((b) => b.addEventListener("click", async () => {
       if (!(await confirmAction({ title: `Remove ${b.dataset.name}?`, text: "Only the saved connection is removed; nothing in the storage is touched.", ok: "Remove" }))) return;
@@ -250,7 +273,7 @@ import Drawer from "../components/Drawer.astro";
         <p class="sub" style="margin:0 0 10px">${r.count.toLocaleString()} objects, ${bytes(r.bytes)} under <code>${esc(r.endpoint)}</code>${r.truncated ? " (showing the first 300)" : ""}</p>
         <table class="data"><tbody>${prefix ? `<tr><td><a href="#" data-p="${esc(prefix.replace(/[^/]+\/?$/, ""))}">..</a></td><td></td></tr>` : ""}${
           [...level].map(([d, v]) => `<tr><td><a href="#" data-p="${esc(prefix + d)}">${esc(d)}</a></td><td class="num">${v.n}+ · ${bytes(v.b)}</td></tr>`).join("")}${
-          files.map((f) => `<tr><td><code>${esc(f.key)}</code></td><td class="num">${bytes(f.size)}</td></tr>`).join("")}</tbody></table>`;
+          files.map((f) => `<tr><td><a href="${API}/api/mover/endpoints/${encodeURIComponent(id)}/object?key=${encodeURIComponent(prefix + f.key)}" download title="Download"><code>${esc(f.key)}</code></a></td><td class="num">${bytes(f.size)}${f.mtime ? `<span class="sub">${esc(ago(Math.floor(f.mtime / 1000)))}</span>` : ""}</td></tr>`).join("")}</tbody></table>`;
       $("#browse-body").querySelectorAll<HTMLAnchorElement>("[data-p]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); browse(id, a.dataset.p!); }));
       $<HTMLFormElement>("#browse-form").addEventListener("submit", (e) => { e.preventDefault(); browse(id, String(new FormData(e.target as HTMLFormElement).get("p") || "")); });
     } catch (e) { errorPanel($("#browse-body"), e); }
@@ -263,17 +286,45 @@ import Drawer from "../components/Drawer.astro";
     $("#ep-note").textContent = p.note ?? "";
     $("#ep-fields").innerHTML = p.fields.map((f: any) => `<label class="field"><span>${esc(f.label)}</span><input type="${f.secret ? "password" : "text"}" name="cfg.${esc(f.key)}" ${f.required ? "required" : ""} spellcheck="false" autocomplete="off" placeholder="${esc(f.placeholder ?? f.default ?? "")}" />${f.help ? `<small>${esc(f.help)}</small>` : ""}</label>`).join("");
   }
-  provSel.addEventListener("change", renderFields);
-  $<HTMLFormElement>("#endpoint-form").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const f = new FormData(ev.target as HTMLFormElement);
+  provSel.addEventListener("change", () => { renderFields(); $("#ep-test").innerHTML = ""; });
+  const epForm = $<HTMLFormElement>("#endpoint-form");
+  const formBody = () => {
+    const f = new FormData(epForm);
     const cfg: Record<string, string> = {}; for (const [k, v] of f) if (k.startsWith("cfg.") && String(v).trim()) cfg[k.slice(4)] = String(v).trim();
-    const body = { name: String(f.get("name")).trim(), provider: String(f.get("provider")), prefix: String(f.get("prefix") || "").trim(), config: cfg };
+    return { id: String(f.get("id") || ""), name: String(f.get("name")).trim(), provider: String(f.get("provider")), prefix: String(f.get("prefix") || "").trim(), config: cfg };
+  };
+  // Add (no endpoint) or edit (fields filled; secrets left blank keep their saved value).
+  function openEndpoint(e?: any) {
+    epForm.reset(); $("#ep-test").innerHTML = "";
+    (epForm.elements.namedItem("id") as HTMLInputElement).value = e?.id ?? "";
+    provSel.disabled = !!e; if (e) provSel.value = e.provider;
+    renderFields();
+    if (e) {
+      (epForm.elements.namedItem("name") as HTMLInputElement).value = e.name;
+      (epForm.elements.namedItem("prefix") as HTMLInputElement).value = e.prefix ?? "";
+      for (const [k, v] of Object.entries(e.config)) { const el = epForm.elements.namedItem(`cfg.${k}`) as HTMLInputElement | null; if (!el) continue; if (el.type === "password") { el.required = false; el.placeholder = `${v} (saved; leave blank to keep)`; } else el.value = String(v); }
+    }
+    document.getElementById("endpoint-title")!.textContent = e ? `Edit ${e.name}` : "Add endpoint";
+    (document.getElementById("endpoint") as HTMLDialogElement).showModal();
+  }
+  $("#add-ep").addEventListener("click", () => openEndpoint());
+  $("#ep-test-btn").addEventListener("click", async () => {
+    const b = formBody(); const btn = $<HTMLButtonElement>("#ep-test-btn");
+    btn.disabled = true; btn.textContent = "Testing…"; $("#ep-test").innerHTML = "";
+    try { $("#ep-test").innerHTML = testHtml(await api("/api/mover/test-config", { method: "POST", json: { provider: b.provider, config: b.config, prefix: b.prefix, endpoint: b.id || undefined } })); }
+    catch (e: any) { $("#ep-test").innerHTML = testHtml({ list: false, write: false, detail: e.message }); }
+    finally { btn.disabled = false; btn.textContent = "Test connection"; }
+  });
+  epForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const body = formBody();
     let ep: any = null;
-    if (!(await act(document.querySelector('button[form="endpoint-form"]'), async () => { ep = await api("/api/mover/endpoints", { method: "POST", json: body }); }, `Saved ${body.name}`)) || !ep) return;
+    if (body.id) {
+      if (!(await act(document.querySelector('button[form="endpoint-form"]'), async () => { ep = await api(`/api/mover/endpoints/${body.id}`, { method: "PATCH", json: { name: body.name, prefix: body.prefix, config: body.config } }); }, `Saved ${body.name}`)) || !ep) return;
+    } else if (!(await act(document.querySelector('button[form="endpoint-form"]'), async () => { ep = await api("/api/mover/endpoints", { method: "POST", json: body }); }, `Saved ${body.name}`)) || !ep) return;
     const t = await api<any>(`/api/mover/endpoints/${ep.id}/test`, { method: "POST", json: {} }).catch((e) => ({ list: false, write: false, detail: e.message }));
     toast(t.list && t.write ? `${body.name}: can list and write` : `${body.name} saved, but: ${t.detail}`, t.list && t.write ? "ok" : "bad");
-    (document.getElementById("endpoint") as HTMLDialogElement).close(); (ev.target as HTMLFormElement).reset(); renderFields(); load();
+    (document.getElementById("endpoint") as HTMLDialogElement).close(); epForm.reset(); provSel.disabled = false; renderFields(); load();
   });
 
   $<HTMLFormElement>("#sync-form").addEventListener("submit", async (ev) => {

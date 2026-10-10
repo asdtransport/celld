@@ -12,6 +12,10 @@ const hops = ["Edge", "Tunnel", "Load balancer", "Nodes", "Bucket"];
   </header>
 
   <div id="update-note"></div>
+  <section class="panel getting-started" id="start" hidden style="margin-bottom:18px">
+    <div class="panel-head"><h2>Get started</h2><span class="hint"><span id="start-count"></span> · <button class="linkish" type="button" id="start-hide">Hide</button></span></div>
+    <ol class="steps" id="start-steps"></ol>
+  </section>
   <section class="panel" aria-label="Request path">
     <div class="path" id="path">
       {hops.map((h) => (
@@ -62,7 +66,7 @@ const hops = ["Edge", "Tunnel", "Load balancer", "Nodes", "Bucket"];
       }</tbody></table>` : `<div class="empty"><strong>No applications yet</strong>Register one to deploy Workers onto this fleet. <a href="/apps">Create an application</a></div>`;
 
       $("#activity").innerHTML = o.activity.length ? `<table class="data"><tbody>${
-        o.activity.map((e: any) => `<tr><td><span class="status ${statusClass(e.outcome === "ok" ? "ok" : e.outcome === "denied" ? "warn" : "bad")}">${esc(auditLine(e))}</span><span class="sub">by ${esc(e.actor)}${e.detail ? `: ${esc(e.detail)}` : ""}</span></td>
+        o.activity.map((e: any) => `<tr><td><span class="status ${statusClass(e.outcome === "ok" ? "ok" : e.outcome === "denied" ? "warn" : "bad")}">${esc(auditLine(e))}</span><span class="sub clamp">by ${esc(e.actor)}${e.detail ? `: ${esc(e.detail)}` : ""}</span></td>
           <td class="num" style="white-space:nowrap"><span class="sub">${ago(e.at)}</span></td></tr>`).join("")
       }</tbody></table>` : `<div class="empty">Nothing has happened yet. Deploys, rollbacks and data changes show up here.</div>`;
     } catch (e) { errorPanel(path, e, load); }
@@ -70,6 +74,32 @@ const hops = ["Edge", "Tunnel", "Load balancer", "Nodes", "Bucket"];
   api<any>("/api/platform/version").then((v) => {
     if (v.behind) $("#update-note").innerHTML = `<div class="notice info" style="margin-bottom:18px">A platform update is available: ${v.behind} new commit${v.behind === 1 ? "" : "s"} on <code>${esc(v.ref)}</code>. <a href="/system">Review and update</a></div>`;
   }).catch(() => {});
+  // A short checklist until the platform is doing its job end to end.
+  async function steps() {
+    let hidden = false; try { hidden = localStorage.getItem("fleetiq.start.hidden") === "1"; } catch { /* storage off */ }
+    if (hidden) return;
+    try {
+      const [sys, comp] = await Promise.all([api<any>("/api/system"), api<any>("/api/compliance").catch(() => null)]);
+      const apps = sys.apps ?? [];
+      const live = apps.filter((a: any) => a.version);
+      const origin = location.origin;
+      const list = [
+        { done: apps.length > 0, title: "Create an application", text: `In <a href="/apps">Applications</a>, or run <code>fleetiq init</code> in a project folder.` },
+        { done: live.length > 0, title: "Deploy a version", text: `From your terminal (<code>curl -fsSL ${esc(origin)}/cli/install.sh | sh</code>), from GitHub, or by uploading a build on the app’s page.` },
+        { done: apps.some((a: any) => a.routes.some((r: string) => r !== "*")), title: "Give it an address", text: `<a href="/routes">Routes</a> map a hostname to an app; HTTPS certificates arrive on the first visit.` },
+        { done: apps.some((a: any) => a.source), title: "Deploy on every push", text: "Connect the app’s GitHub repo on its page and turn on deploy on push. Each build reports back on the commit." },
+        { done: !!comp && live.length > 0 && comp.apps.filter((p: any) => p.liveVersion).every((p: any) => p.backupJobs > 0), title: "Back up off this server", text: `<a href="/mover">Data mover</a> → Back up, to R2, S3, Azure or another server, on a schedule.` },
+        { done: !!comp?.policyMeta, title: "Set your policy", text: `<a href="/compliance">Compliance</a> → Policy: what blocks a deploy (vulnerabilities, secrets, licenses, where changes come from).` },
+      ];
+      const n = list.filter((x) => x.done).length;
+      if (n === list.length) return;
+      $("#start-count").textContent = `${n} of ${list.length} done`;
+      $("#start-steps").innerHTML = list.map((x) => `<li class="${x.done ? "done" : ""}"><strong>${esc(x.title)}</strong><span>${x.text}</span></li>`).join("");
+      $("#start").hidden = false;
+    } catch { /* the checklist is optional */ }
+  }
+  $("#start-hide").addEventListener("click", () => { $("#start").hidden = true; try { localStorage.setItem("fleetiq.start.hidden", "1"); } catch { /* storage off */ } });
+  steps();
   $("#refresh").addEventListener("click", load);
   load();
   setInterval(() => { if (!document.hidden) load(); }, 15000);

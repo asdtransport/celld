@@ -109,6 +109,8 @@ export const moverJobs = sqliteTable("mover_jobs", {
   everyMinutes: integer("every_minutes"),        // null = manual only
   enabled: integer("enabled").notNull().default(1),
   nextRunAt: integer("next_run_at"),
+  bwLimitMbps: integer("bw_limit_mbps"),        // null = unthrottled (MB/s)
+  maxDeletePct: integer("max_delete_pct").notNull().default(50), // mirror refuses to delete more than this share of the destination
   createdBy: text("created_by"),
   createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
@@ -160,5 +162,45 @@ export type AppTarget = typeof appTargets.$inferSelect;
 export const appSecrets = sqliteTable("app_secrets", {
   app: text("app").primaryKey(),
   migrateToken: text("migrate_token").notNull(),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+
+// ---- Compliance: scans, policy gates, waivers, evidence ----
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(), value: text("value").notNull(), updatedBy: text("updated_by"),
+  updatedAt: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+export const scans = sqliteTable("scans", {
+  id: text("id").primaryKey(),
+  app: text("app").notNull(),
+  deployment: text("deployment"),               // the deploy it gated, if any
+  version: text("version"),                     // celld version it became, once live
+  trigger: text("trigger").notNull(),           // deploy | manual | cloudflare
+  source: text("source"), sourceKind: text("source_kind"), commitSha: text("commit_sha"),
+  status: text("status").notNull(),             // passed | warned | blocked | error
+  summary: text("summary"), findings: text("findings"), sbom: text("sbom"), gate: text("gate"), // JSON
+  actor: text("actor"),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+export type Scan = typeof scans.$inferSelect;
+export const waivers = sqliteTable("waivers", {
+  id: text("id").primaryKey(),
+  app: text("app").notNull().default("*"),
+  kind: text("kind").notNull(),                 // vuln | secret | license | rule
+  ref: text("ref").notNull(),                   // GHSA/CVE id, secret fingerprint, license id, rule id
+  reason: text("reason").notNull(),
+  expiresAt: integer("expires_at"),
+  createdBy: text("created_by").notNull(),
+  createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
+  revokedAt: integer("revoked_at"), revokedBy: text("revoked_by"),
+});
+export type Waiver = typeof waivers.$inferSelect;
+export const intelCache = sqliteTable("intel_cache", {
+  key: text("key").primaryKey(), value: text("value").notNull(),
+  fetchedAt: integer("fetched_at").notNull().default(sql`(unixepoch())`),
+});
+export const evidenceExports = sqliteTable("evidence_exports", {
+  id: text("id").primaryKey(), periodFrom: integer("period_from").notNull(), periodTo: integer("period_to").notNull(),
+  sha256: text("sha256").notNull(), format: text("format").notNull(), createdBy: text("created_by").notNull(),
   createdAt: integer("created_at").notNull().default(sql`(unixepoch())`),
 });

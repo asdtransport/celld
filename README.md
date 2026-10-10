@@ -73,6 +73,24 @@ The app must already run on celld: `wrangler.jsonc` at the project root and a st
 3. **Routes**: add `my-app.<app domain>` → `my-app` (for example `crm.179-236-68-136.sslip.io`).
    The edge gets the HTTPS certificate on the first visit; nothing to run on the server.
 
+### Or deploy from your terminal (like `netlify deploy`)
+
+Install the CLI from your console (Node 18+ or Bun; Windows: `irm https://console.<domain>/cli/install.ps1 | iex`):
+
+```bash
+curl -fsSL https://console.<domain>/cli/install.sh | sh
+fleetiq login --url https://console.<domain>     # opens API & access to make a token
+cd ~/code/my-app
+fleetiq init             # create/link the app, give it <app>.<domain>, optionally deploy on git push
+fleetiq deploy           # a preview: separate app, own address and data (<app>-preview.<domain>)
+fleetiq deploy --prod    # production; --cloudflare also ships the same build to a Cloudflare target
+fleetiq status | open | logs -f | rollback | scan | previews rm
+```
+
+The CLI uploads the folder's source (respecting `.gitignore`, never `.env` files); the server scans
+it, builds it in a throwaway container and deploys it, and the CLI streams the progress. In CI, set
+`FLEETIQ_URL` and `FLEETIQ_TOKEN`; `--json` prints the result and exit code 2 means the policy blocked it.
+
 ### Or deploy straight from GitHub
 
 On the app's page, **Source → Connect GitHub** (repo, branch, project folder), then **Deploy from Git**.
@@ -121,6 +139,24 @@ With a GitHub token on the app's Git source (Webhooks and Commit statuses read/w
 registers the push webhook itself (**Register webhook on GitHub**, or automatically when you turn on
 deploy on push) and marks each commit pending → success/failure as `fleetiq/<app>`.
 
+## Compliance: scans, policy gates and evidence
+
+Every deploy (upload, CLI, Git, push, Cloudflare) is scanned before anything goes live:
+
+- **Dependencies and vulnerabilities**: every package pinned by `bun.lock`, `package-lock.json`,
+  `yarn.lock` or `pnpm-lock.yaml`, checked against OSV (GitHub's advisory database for npm), with
+  the version that fixes each one. Runtime packages are told apart from build and dev tooling.
+- **Secrets**: cloud keys, tokens, private keys, database passwords, `.env` files, and passwords in
+  `wrangler.jsonc` vars. Shown masked; a line with `fleetiq:allow-secret` is skipped.
+- **Licenses** and an **SBOM** (CycloneDX 1.5) per scan.
+
+**Compliance → Policy** sets what blocks a deploy (vulnerability severity, secrets, licenses,
+lockfiles, Git-only, allowed branches, required tests), or warn-only mode. A blocked deploy says why
+in its log and on the GitHub commit. **Waivers** let one finding through with a reason and an expiry.
+The page checks SOC 2-mapped controls live (access, vulnerabilities, secrets, change management,
+backups, restore tests) and **Export evidence** produces a printable report and a SHA-256-stamped
+JSON for an audit period. Advisory and license lookups can go to mirrors (`OSV_API`, `NPM_REGISTRY`).
+
 ## Data mover: backups, disaster recovery and client migrations
 
 **Data mover** in the console copies between any two places, like rsync for cloud storage. Built-in
@@ -129,7 +165,14 @@ Spaces, Backblaze B2, Google Cloud Storage (HMAC), Wasabi, any S3-compatible sto
 SeaweedFS, Ceph), a folder on this server, and this server's own fleet bucket.
 
 - **Copy** adds and updates; **mirror** also deletes what the source no longer has, but only after
-  every copy succeeded. Later runs move only what changed (size and time, or checksums).
+  every copy succeeded, and never more than half the destination unless you raise the limit (a
+  wrong or emptied source can't wipe a backup). Later runs move only what changed (size and time,
+  or checksums; local folders are hashed to compare).
+- **Test connection** before saving an endpoint; errors say what to fix (wrong region, bad secret,
+  missing bucket, SAS expired or missing a permission). Azure works with a container SAS or the
+  account's connection string (which can also create the container).
+- Options per copy or job: only/skip patterns, speed limit (MB/s), parallel transfers. Runs show
+  speed and time left; files can be downloaded from Browse.
 - **Dry run** shows exactly what would be copied and deleted. Every run verifies what it wrote.
 - **Jobs** save a copy and can repeat it every 15 minutes to daily.
 - **Back up an application**: its whole celld state (Durable Objects, D1, KV, queues, deployed

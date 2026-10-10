@@ -1,6 +1,6 @@
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { type Connector, MoverError, type ObjData, type ObjInfo, readAll } from "./types";
+import { type Connector, MoverError, type ObjData, type ObjInfo } from "./types";
 
 // A folder on this server (inside FleetIQ's data volume). Good for a quick local backup, or as a
 // staging area when a client's two clouds can't talk to each other directly.
@@ -34,13 +34,27 @@ export class LocalConnector implements Connector {
   async get(key: string): Promise<ObjData | null> {
     const f = Bun.file(this.path(key));
     if (!(await f.exists())) return null;
-    return { body: f.stream(), size: f.size, contentType: null };
+    // Bun infers the type from the extension; plain bytes stay untyped.
+    const type = f.type && !f.type.startsWith("application/octet-stream") ? f.type.split(";")[0]! : null;
+    return { body: f.stream(), size: f.size, contentType: type };
   }
+  // Listings carry no checksum, so "checksum" compares hash the file (streamed, any size).
+  async hash(key: string): Promise<string | null> {
+    const f = Bun.file(this.path(key));
+    if (!(await f.exists())) return null;
+    const h = new Bun.CryptoHasher("md5");
+    for await (const chunk of f.stream()) h.update(chunk);
+    return h.digest("hex");
+  }
+  // Where the folder is inside FleetIQ's container (shown in the console).
+  get location() { return this.root; }
   async put(key: string, data: ObjData): Promise<void> {
     const p = this.path(key);
     await mkdir(dirname(p), { recursive: true });
     const tmp = `${p}.${process.pid}.mover-tmp`;
-    await Bun.write(tmp, data.body instanceof Uint8Array ? data.body : await readAll(data.body));
+    // Streams go to disk as they arrive, so big files don't sit in memory.
+    if (data.body instanceof Uint8Array) await Bun.write(tmp, data.body);
+    else { const w = Bun.file(tmp).writer(); try { for await (const c of data.body as any) w.write(c); await w.end(); } catch (e) { await w.end(); await rm(tmp, { force: true }); throw e; } }
     await rename(tmp, p);
   }
   async delete(key: string): Promise<void> { await rm(this.path(key), { force: true }); }

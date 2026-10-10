@@ -106,10 +106,10 @@ export async function runBuilder(opts: {
   const name = `fleetiq-build-${Date.now().toString(36)}`;
   const outPath = opts.outPath === undefined ? "/tmp/out/app.tgz" : opts.outPath;
   const body = {
-    Image: opts.image, Cmd: ["sh", `/app/bin/${opts.script ?? "build.sh"}`], Env: opts.env, WorkingDir: "/tmp",
+    Image: opts.image, Cmd: ["sh", `/app/bin/${opts.script ?? "build.sh"}`], Env: [...config.builderEnv, ...opts.env], WorkingDir: "/tmp",
     Labels: { "fleetiq.role": "builder" },
     HostConfig: {
-      NetworkMode: "bridge", Memory: opts.memoryMb * 1024 * 1024, AutoRemove: false,
+      NetworkMode: config.builderNetwork, Memory: opts.memoryMb * 1024 * 1024, AutoRemove: false,
       // Package downloads (bun, wrangler) are cached between builds; nothing else persists.
       Mounts: [{ Type: "volume", Source: "fleetiq-builder-cache", Target: "/root/.bun/install/cache" }],
     },

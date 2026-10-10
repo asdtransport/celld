@@ -36,6 +36,8 @@ export const config = {
   builderMemoryMb: Number(env("BUILDER_MEMORY_MB", "3072")),
   buildTimeoutMs: Number(env("BUILD_TIMEOUT_MIN", "15")) * 60_000,
   builderCaFile: env("BUILDER_CA_FILE"),          // extra CA for the build (TLS-intercepting proxies)
+  builderNetwork: env("BUILDER_NETWORK", "bridge"), // "host" when installs must go through a proxy on the host
+  builderEnv: env("BUILDER_ENV", "").split(";").map((s) => s.trim()).filter((s) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(s)), // e.g. HTTPS_PROXY=http://proxy:3128
   githubToken: env("GITHUB_TOKEN"),                // default token for private GitHub repos
   githubApi: env("GITHUB_API", "https://api.github.com"),
   // Self-update: the installer runs again in a one-shot helper container with the Docker socket and the
@@ -46,8 +48,14 @@ export const config = {
   updateRef: env("UPDATE_REF", "celld-stack"),
   updaterImage: env("UPDATER_IMAGE", "docker:27-cli"),
   updateSourceUrl: env("UPDATE_SOURCE_URL", ""),   // install from this .tar.gz instead of GitHub (mirrors, air-gapped sites)
+  // Compliance scans: where advisories and licenses come from (mirrors for restricted networks).
+  osvApi: env("OSV_API", "https://api.osv.dev").replace(/\/+$/, ""),
+  npmRegistry: env("NPM_REGISTRY", "https://registry.npmjs.org").replace(/\/+$/, ""),
   // The console's public URL, for webhook and MCP addresses shown in the UI.
   publicUrl: env("CONSOLE_URL", "").replace(/\/+$/, ""),
+  // Apps are served as <name>.<appDomain> (preview deploys get routes there). Defaults to the
+  // console's host without its "console." prefix.
+  appDomain: env("APP_DOMAIN", "") || (() => { try { return new URL(env("CONSOLE_URL", "")).hostname.replace(/^console\./, ""); } catch { return ""; } })(),
 };
 
 export function bucketName(): string {
